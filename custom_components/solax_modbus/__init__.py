@@ -21,7 +21,7 @@ from homeassistant.components.button import ButtonEntity
 
 _LOGGER = logging.getLogger(__name__)
 #try: # pymodbus 3.0.x
-from pymodbus.client import AsyncModbusTcpClient, AsyncModbusSerialClient
+from pymodbus.client import ModbusTcpClient, ModbusSerialClient
 
 #    UNIT_OR_SLAVE = 'slave'
 #    _LOGGER.warning("using pymodbus library 3.x")
@@ -196,7 +196,7 @@ class SolaXModbusHub:
         _LOGGER.debug(f"solax modbushub creation with interface {interface} baudrate (only for serial): {baudrate}")
         self._hass = hass
         if interface == "serial":
-            self._client = AsyncModbusSerialClient(
+            self._client = ModbusSerialClient(
                 method="rtu",
                 port=serial_port,
                 baudrate=baudrate,
@@ -207,15 +207,15 @@ class SolaXModbusHub:
             )
         else:
             if tcp_type == "rtu":
-                self._client = AsyncModbusTcpClient(
+                self._client = ModbusTcpClient(
                     host=host, port=port, timeout=5, framer=ModbusRtuFramer
                 )
             elif tcp_type == "ascii":
-                self._client = AsyncModbusTcpClient(
+                self._client = ModbusTcpClient(
                     host=host, port=port, timeout=5, framer=ModbusAsciiFramer
                 )
             else:
-                self._client = AsyncModbusTcpClient(host=host, port=port, timeout=5)
+                self._client = ModbusTcpClient(host=host, port=port, timeout=5)
         self._lock = asyncio.Lock()
         self._name = name
         self._modbus_addr = modbus_addr
@@ -365,20 +365,20 @@ class SolaXModbusHub:
         _LOGGER.debug("connect modbus")
         if not self._client.connected:
             async with self._lock:
-                await self._client.connect()
+                self._client.connect()
 
 
     async def async_read_holding_registers(self, unit, address, count):
         """Read holding registers."""
         async with self._lock:
             kwargs = {'slave': unit} if unit else {}
-            return await self._client.read_holding_registers(address, count, **kwargs)
+            return self._client.read_holding_registers(address, count, **kwargs)
 
     async def async_read_input_registers(self, unit, address, count):
         """Read input registers."""
         async with self._lock:
             kwargs = {'slave': unit} if unit else {}
-            return await self._client.read_input_registers(address, count, **kwargs)
+            return self._client.read_input_registers(address, count, **kwargs)
 
     async def async_lowlevel_write_register(self, unit, address, payload):
         async with self._lock:
@@ -388,7 +388,7 @@ class SolaXModbusHub:
             builder.reset()
             builder.add_16bit_int(payload)
             payload = builder.to_registers()
-            return await self._client.write_register(address, payload[0], **kwargs)
+            return self._client.write_register(address, payload[0], **kwargs)
 
     async def async_write_register(self, unit, address, payload):
         """Write register."""
@@ -420,7 +420,7 @@ class SolaXModbusHub:
             builder.reset()
             builder.add_16bit_int(payload)
             payload = builder.to_registers()
-            return await self._client.write_registers(address, payload, **kwargs)
+            return self._client.write_registers(address, payload, **kwargs)
 
     async def async_write_registers_multi(self, unit, address, payload): # Needs adapting for regiater que
         """Write registers multi.
@@ -462,7 +462,7 @@ class SolaXModbusHub:
                 payload = builder.to_registers()
                 # for easier debugging, make next line a _LOGGER.info line
                 _LOGGER.debug(f"Ready to write multiple registers at 0x{address:02x}: {payload}")
-                return await self._client.write_registers(address, payload, **kwargs)
+                return self._client.write_registers(address, payload, **kwargs)
             else:
                 _LOGGER.error(f"write_registers_multi expects a list of tuples 0x{address:02x} payload: {payload}")
                 return None
