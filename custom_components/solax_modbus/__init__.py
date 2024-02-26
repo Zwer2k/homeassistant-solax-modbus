@@ -14,10 +14,11 @@ import json
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_SCAN_INTERVAL
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_SCAN_INTERVAL, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.components.button import ButtonEntity
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 
 _LOGGER = logging.getLogger(__name__)
 #try: # pymodbus 3.0.x
@@ -69,7 +70,7 @@ from .const import (
 from .const import REGISTER_S32, REGISTER_U32, REGISTER_U16, REGISTER_S16, REGISTER_ULSB16MSB16, REGISTER_STR, REGISTER_WORDS, REGISTER_U8H, REGISTER_U8L
 
 
-PLATFORMS = ["button", "number", "select", "sensor"]
+PLATFORMS = [Platform.BUTTON, Platform.NUMBER, Platform.SELECT, Platform.SENSOR]
 
 #seriesnumber = 'unknown'
 
@@ -139,15 +140,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     _LOGGER.debug(f"solax serial port {serial_port} interface {interface}")
 
     hub = SolaXModbusHub(hass, name, host, port, tcp_type, modbus_addr, interface, serial_port,
-                         baudrate, scan_interval, plugin, config, entry)
+                        baudrate, scan_interval, plugin, config, entry)
     """Register the hub."""
     hass.data[DOMAIN][name] = { "hub": hub,  }
 
-    hass.async_create_task(hub.async_get_inverter_type())
+    #hass.async_create_task(hub.async_connect())
+    #hass.async_create_background_task(hub.async_connect())
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, hub.async_connect())
+    #entry.async_create_task(hass, hub.async_connect(), "async_connect")
 
     entry.async_on_unload(entry.add_update_listener(config_entry_update_listener))
     return True
-
 
 async def async_unload_entry(hass, entry):
     """Unload SolaX mobus entry."""
@@ -253,16 +256,23 @@ class SolaXModbusHub:
         self.entry = entry
         _LOGGER.debug("solax modbushub done %s", self.__dict__)
 
-    async def async_get_inverter_type(self):
-        await self.async_connect()
-        self._invertertype = await self.plugin.async_determineInverterType(
-            self, self.config
-        )
-
-        for component in PLATFORMS:
-            self._hass.async_create_task(
-                self._hass.config_entries.async_forward_entry_setup(self.entry, component)
-            )
+    async def async_connect(self):
+        _LOGGER.info("async_connect")
+        if not self._client.connected:
+            async with self._lock:
+                if await self._client.connect():
+                    _LOGGER.info("Connection establish -> determineInverterType")
+                else:
+                    _LOGGER.error("Failed to establish a connection!")
+            if self._client.connected:
+                _LOGGER.info("async_determineInverterType")
+                self._invertertype = await self.plugin.async_determineInverterType(
+                    self, self.config
+                )
+                _LOGGER.info("async_forward_entry_setups")
+                self._hass.async_create_task(
+                    self._hass.config_entries.async_forward_entry_setups(self.entry, PLATFORMS)
+                )
 
     # save and load local data entity values to make them persistent
     DATAFORMAT_VERSION = 1
@@ -360,14 +370,6 @@ class SolaXModbusHub:
             async with self._lock:
                 self._client.close()
 
-    async def async_connect(self):
-        """Connect client."""
-        _LOGGER.debug("connect modbus")
-        if not self._client.connected:
-            async with self._lock:
-                await self._client.connect()
-
-
     async def async_read_holding_registers(self, unit, address, count):
         """Read holding registers."""
         async with self._lock:
@@ -427,8 +429,8 @@ class SolaXModbusHub:
         unit is the modbus address of the device that will be writen to
         address us the start register address
         payload is a list of tuples containing
-          - a select or number entity keys names or alternatively REGISTER_xx type declarations
-          - the values are the values that will be encoded according to the spec of that entity
+            - a select or number entity keys names or alternatively REGISTER_xx type declarations
+            - the values are the values that will be encoded according to the spec of that entity
         The list of tuples will be converted to a modbus payload with the proper encoding and written
         to modbus device with address=unit
         All register descriptions referenced in the payload must be consecutive (without leaving holes)
