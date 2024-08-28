@@ -241,7 +241,7 @@ NUMBER_TYPES = [
         fmt = "i",
         native_max_value = 20000,
         native_min_value = -20000,
-        native_step = 100,
+        native_step = 10,
         initvalue = 0,
         allowedtypes = HYBRID,
         prevent_update = True,
@@ -3841,7 +3841,7 @@ class battery_config(base_battery_config):
     async def select_battery(self, hub, batt_nr: int, batt_pack_nr: int):
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
-        _LOGGER.debug(f"select batt-nr: {batt_nr} batt-pack: {batt_pack_nr} {hex(payload)}")
+        _LOGGER.warning(f"select batt-nr: {batt_nr} batt-pack: {batt_pack_nr} {hex(payload)}")
         await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
         await asyncio.sleep(0.3)
         self.selected_batt_nr = batt_nr
