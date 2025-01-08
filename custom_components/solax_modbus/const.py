@@ -126,6 +126,10 @@ class base_battery_config:
         self.battery_sensor_name_prefix: str | None = None
         self.battery_sensor_key_prefix: str | None = None
 
+        self.battery_pack_sensor_type: list[SelectEntityDescription] | None = None
+        self.battery_pack_sensor_name_prefix: str | None = None
+        self.battery_pack_sensor_key_prefix: str | None = None
+
 @dataclass
 class plugin_base:
     plugin_name: str

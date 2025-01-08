@@ -31,7 +31,7 @@ try:
     from homeassistant.components.modbus import ModbusHub as CoreModbusHub, get_hub as get_core_hub
 except ImportError:
     def get_hub(name): None
-    class CoreModbusHub: 
+    class CoreModbusHub:
         """ place holder dummy """
 
 
@@ -286,6 +286,7 @@ class SolaXModbusHub:
             sensors=[],
             inputBlocks={},
             holdingBlocks={},
+            computedSensors={},
             readPreparation=None,  # function to call before read group
             readFollowUp=None,  # function to call after read group
         )
@@ -296,7 +297,6 @@ class SolaXModbusHub:
         self.tmpdata_expiry = {}  # expiry timestamps for tempdata
         self.cyclecount = 0  # temporary - remove later
         self.slowdown = 1  # slow down factor when modbus is not responding: 1 : no slowdown, 10: ignore 9 out of 10 cycles
-        self.computedSensors = {}
         self.computedButtons = {}
         self.sensorEntities = {}  # all sensor entities, indexed by key
         self.numberEntities = {}  # all number entities, indexed by key
@@ -890,14 +890,15 @@ class SolaXModbusHub:
             self.plugin.localDataCallback(self)
         if not self.localsLoaded:
             await self._hass.async_add_executor_job(self.loadLocalData)
-        for reg in self.computedSensors:
-            descr = self.computedSensors[reg]
-            data[descr.key] = descr.value_function(0, descr, data)
 
         if group.readFollowUp is not None:
             if not await group.readFollowUp(self.data, data):
                 _LOGGER.warning(f"device group check not success")
                 return True
+
+        for reg in group.computedSensors:
+            descr = group.computedSensors[reg]
+            data[descr.key] = descr.value_function(0, descr, data)
 
         for key, value in data.items():
             self.data[key] = value
@@ -921,7 +922,6 @@ class SolaXModbusHub:
             if self.last_ts < v:
                 buttondescr = self.computedButtons[k]
                 payload = buttondescr.value_function(0, buttondescr, self.data)
-                _LOGGER.debug(f"ready to repeat button {k} data: {payload}")
                 await self.async_write_registers_multi(
                     unit=self._modbus_addr,
                     address=buttondescr.register,
@@ -975,7 +975,7 @@ class SolaXCoreModbusHub(SolaXModbusHub,CoreModbusHub):
                 pass
         _LOGGER.info("Inverter is not connected, trying to connect")
         return await self.async_connect(hub)
-            
+
     def _hub_closed_now(self,ref_obj):
         with self._lock:
             if ref_obj is self._hub:
@@ -984,12 +984,12 @@ class SolaXCoreModbusHub(SolaXModbusHub,CoreModbusHub):
     async def async_connect(self,hub = None):
         delay = True
         while True:
-            # check if strong reference to 
+            # check if strong reference to
             # get one.
             if hub is not None or ( self._hub is not None and ( hub := self._hub() ) is not None ):
                 port = hub._pb_params.get('port',0)
                 host = hub._pb_params.get('host',port)
-                # TODO just wait some time and recheck again if client connected before 
+                # TODO just wait some time and recheck again if client connected before
                 # giving up
                 await hub._lock.acquire()
                 try:
@@ -1058,7 +1058,7 @@ class SolaXCoreModbusHub(SolaXModbusHub,CoreModbusHub):
             raise HomeAssistantError(
                 f"Error reading Modbus holding registers: core modbus access failed"
             ) from e
-        
+
 
     async def async_read_input_registers(self, unit, address, count):
         """Read input registers."""
@@ -1135,7 +1135,7 @@ class SolaXCoreModbusHub(SolaXModbusHub,CoreModbusHub):
                     raise HomeAssistantError(
                         f"Error writing single Modbus registers: {original_message}"
                     ) from e
-                
+
             return resp
         except (TypeError, AttributeError) as e:
             raise HomeAssistantError(

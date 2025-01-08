@@ -122,6 +122,18 @@ def value_function_refluxcontrol(initval, descr, datadict):
               ('feedin_max_power', int(datadict.get('feedin_max_power', 0)) / 100, ),
             ]
 
+def value_function_battery_pack_power(initval, descr, datadict):
+    prefix = descr.key.replace("total_power", "")
+    voltage = datadict.get(prefix + "total_voltage", None)
+    current = datadict.get(prefix + "total_current", None)
+    _LOGGER.info(f"total_power {prefix} {voltage} {current}")
+
+    if voltage is None or current is None:
+        return None
+
+    return voltage * current
+
+
 # TIMING AND TOU DISABLED AS THESE ARE NOT WORKING
 # def value_function_timingmode(initval, descr, datadict):
 #     return  [ ('timing_id', datadict.get('timing_id', 0), ),
@@ -1286,7 +1298,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register = 0x4A0,
         unit = REGISTER_S16,
         scale = 0.001,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | PV,
     ),
     SofarModbusSensorEntityDescription(
@@ -1330,7 +1342,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | PV,
     ),
     SofarModbusSensorEntityDescription(
@@ -1342,7 +1354,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register = 0x4A7,
         unit = REGISTER_S16,
         scale = 0.001,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | PV,
     ),
     SofarModbusSensorEntityDescription(
@@ -1375,7 +1387,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | PV,
     ),
     SofarModbusSensorEntityDescription(
@@ -1387,7 +1399,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register = 0x4AB,
         unit = REGISTER_S16,
         scale = 0.001,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | PV,
     ),
     SofarModbusSensorEntityDescription(
@@ -1573,7 +1585,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
@@ -1640,7 +1652,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
@@ -1706,7 +1718,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
@@ -1772,7 +1784,7 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.01,
         rounding = 2,
-        entity_registry_enabled_default =  False,
+        entity_registry_enabled_default = False,
         allowedtypes = HYBRID | X3 | EPS,
     ),
     SofarModbusSensorEntityDescription(
@@ -3586,8 +3598,31 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
     ),
 ]
 
+BATTERY_BDU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        name = "BDU Serial Number",
+        key = "bdu_serial_number",
+        register = 0x6091,
+        newblock = True,
+        unit = REGISTER_STR,
+        wordcount=9,
+        entity_category = EntityCategory.DIAGNOSTIC,
+        allowedtypes = BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name = "BDU Version",
+        key = "BDU_version",
+        native_unit_of_measurement = None,
+        state_class = SensorStateClass.MEASUREMENT,
+        entity_category = EntityCategory.DIAGNOSTIC,
+        register = 0x609B,
+        unit = REGISTER_STR,
+        wordcount=4,
+        allowedtypes = BAT_BTS,
+    ),
+]
 
-BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+BATTERY_BMS_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
     # SofarModbusSensorEntityDescription(
     #     name = "total voltage",
     #     key = "total_voltage",
@@ -3636,6 +3671,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         register = 0x900E,
         scale = 0.1,
         allowedtypes = BAT_BTS,
+        entity_registry_enabled_default = False,
     ),
     SofarModbusSensorEntityDescription(
         name = "Total Voltage",
@@ -3655,6 +3691,16 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.1,
         allowedtypes = BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Total Power",
+        key="total_power",
+        value_function=value_function_battery_pack_power,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        rounding=2,
+        allowedtypes=BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
         name = "SOC",
@@ -3677,6 +3723,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         key = "pack_id",
         newblock = True,
         register = 0x9044,
+        entity_category = EntityCategory.DIAGNOSTIC,
         allowedtypes = BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
@@ -3691,10 +3738,18 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         icon = "mdi:clock",
     ),
     SofarModbusSensorEntityDescription(
+        name = "Pack Serial Number Prefix",
+        key = "pack_serial_number_prefix",
+        register = 0x9047,
+        unit = REGISTER_STR,
+        wordcount=1,
+        entity_category = EntityCategory.DIAGNOSTIC,
+        allowedtypes = BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
         name = "Pack Serial Number",
         key = "pack_serial_number",
         register = 0x9048,
-        newblock = True,
         unit = REGISTER_STR,
         wordcount=9,
         entity_category = EntityCategory.DIAGNOSTIC,
@@ -3710,6 +3765,18 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         rounding = 3,
         allowedtypes = BAT_BTS,
         value_series = 16
+    ),
+    SofarModbusSensorEntityDescription(
+        name = "cell dummy {} voltage",
+        key = "cell_dummy_{}_voltage",
+        native_unit_of_measurement = UnitOfElectricPotential.VOLT,
+        device_class = SensorDeviceClass.VOLTAGE,
+        register = 0x9061,
+        scale = 0.001,
+        rounding = 3,
+        allowedtypes = BAT_BTS,
+        value_series = 8,
+        entity_registry_enabled_default = False,
     ),
     SofarModbusSensorEntityDescription(
         name = "cell min voltage",
@@ -3741,7 +3808,8 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.1,
         allowedtypes = BAT_BTS,
-        value_series = 4
+        value_series = 4,
+        entity_registry_enabled_default = False,
     ),
     SofarModbusSensorEntityDescription(
         name = "Pack Temperature MOS",
@@ -3753,6 +3821,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         unit = REGISTER_S16,
         scale = 0.1,
         allowedtypes = BAT_BTS,
+        entity_registry_enabled_default = False,
     ),
     SofarModbusSensorEntityDescription(
         name = "Pack Temperature Env",
@@ -3813,9 +3882,13 @@ class battery_config(base_battery_config):
     def __init__(
         self
     ):
-        self.battery_sensor_type = BATTERY_SENSOR_TYPES
-        self.battery_sensor_name_prefix = "Battery {batt-nr}/{pack-nr} "
-        self.battery_sensor_key_prefix = "battery_{batt-nr}_{pack-nr}_"
+        self.battery_sensor_type = BATTERY_BDU_SENSOR_TYPES
+        self.battery_sensor_name_prefix = "Battery {batt-nr} "
+        self.battery_sensor_key_prefix = "battery_{batt-nr}_"
+
+        self.battery_pack_sensor_type = BATTERY_BMS_SENSOR_TYPES
+        self.battery_pack_sensor_name_prefix = "Battery {batt-nr}-{pack-nr} "
+        self.battery_pack_sensor_key_prefix = "battery_{batt-nr}_{pack-nr}_"
 
     bapack_number_address = 0x900d
     bms_inquire_address = 0x9020
@@ -3846,7 +3919,7 @@ class battery_config(base_battery_config):
             await self._determine_bat_quantitys(hub)
         return self.number_strings
 
-    async def select_battery(self, hub, batt_nr: int, batt_pack_nr: int):
+    async def select_battery_pack(self, hub, batt_nr: int, batt_pack_nr: int):
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
         _LOGGER.debug(f"select batt-nr: {batt_nr} batt-pack: {batt_pack_nr} {hex(payload)}")
@@ -3951,7 +4024,7 @@ class battery_config(base_battery_config):
                     self.batt_pack_serials[batt_nr] = {}
 
                 for batt_pack_nr in range(self.number_cels_in_parallel):
-                    await self.select_battery(hub, batt_nr, batt_pack_nr)
+                    await self.select_battery_pack(hub, batt_nr, batt_pack_nr)
                     serial = await self._determinate_batt_pack_serial(hub)
                     if self.batt_pack_serials[batt_nr].__contains__(batt_pack_nr):
                         if self.batt_pack_serials[batt_nr][batt_pack_nr] != serial:
