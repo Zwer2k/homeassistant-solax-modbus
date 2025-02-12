@@ -68,15 +68,16 @@ async def async_read_serialnr(hub, address, swapbytes):
         if not inverter_data.isError():
             decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
             res = decoder.decode_string(14).decode("ascii")
+            _LOGGER.info(f"Serial {res}")
             if swapbytes:
                 ba = bytearray(res, "ascii")  # convert to bytearray for swapping
                 ba[0::2], ba[1::2] = ba[1::2], ba[0::2]  # swap bytes ourselves - due to bug in Endian.LITTLE ?
                 res = str(ba, "ascii")  # convert back to string
             hub.seriesnumber = res
     except Exception as ex:
-        _LOGGER.warning(f"{hub.name}: attempt to read serialnumber failed at 0x{address:x}", exc_info=True)
+        _LOGGER.error(f"{hub.name}: attempt to read serialnumber failed at 0x{address:x}", exc_info=True)
     if not res:
-        _LOGGER.warning(
+        _LOGGER.error(
             f"{hub.name}: reading serial number from address 0x{address:x} failed; other address may succeed"
         )
     _LOGGER.info(f"Read {hub.name} 0x{address:x} serial number: {res}, swapped: {swapbytes}")
@@ -3972,7 +3973,13 @@ class battery_config(base_battery_config):
         self.battery_pack_sensor_name_prefix = "Battery {batt-nr}-{pack-nr} "
         self.battery_pack_sensor_key_prefix = "battery_{batt-nr}_{pack-nr}_"
 
-    bapack_number_address = 0x900D
+    bdu_number_address = 0x6084
+    bdu_inquire_address = 0x60C4
+    bdu_check_address = 0x9090
+    batt_serial_address = 0x9091
+    batt_serial_len = 10
+
+    batt_pack_number_address = 0x900D
     bms_inquire_address = 0x9020
     bms_check_address = 0x9044
     batt_pack_serial_address = 0x9048
@@ -3980,6 +3987,7 @@ class battery_config(base_battery_config):
     batt_pack_model_address = 0x9007
     batt_pack_model_len = 4
 
+    number_bdu: int = None  # number of battery BDU
     number_cels_in_parallel: int = None  # number of battery pack cells in parallel
     number_strings: int = None  # number of strings of all battery packs
     batt_pack_serials = {}
@@ -3991,14 +3999,26 @@ class battery_config(base_battery_config):
             self.batt_pack_serials[self.selected_batt_nr] = {}
         self.batt_pack_serials[self.selected_batt_nr][self.selected_batt_pack_nr] = serial_number
 
+    async def get_batt_quantity(self, hub):
+        try:
+            inverter_data = await hub.async_read_holding_registers(
+                unit=hub._modbus_addr, address=self.bdu_number_address, count=1
+            )
+            if not inverter_data.isError():
+                decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
+                self.number_bdu = decoder.decode_16bit_int()
+                return self.number_bdu
+        except Exception as ex:
+            _LOGGER.warning(f"{hub.name}: attempt to read Bat quantity failed at 0x{address:x}", exc_info=True)
+
     async def get_batt_pack_quantity(self, hub):
         if self.number_cels_in_parallel == None:
-            await self._determine_bat_quantitys(hub)
+            await self._determine_batt_pack_quantitys(hub)
         return self.number_cels_in_parallel
 
-    async def get_batt_quantity(self, hub):
+    async def get_batt_string_quantity(self, hub):
         if self.number_strings == None:
-            await self._determine_bat_quantitys(hub)
+            await self._determine_batt_pack_quantitys(hub)
         return self.number_strings
 
     async def select_battery_pack(self, hub, batt_nr: int, batt_pack_nr: int):
@@ -4094,11 +4114,10 @@ class battery_config(base_battery_config):
 
         return False
 
-    async def _determine_bat_quantitys(self, hub):
-        res = None
+    async def _determine_batt_pack_quantitys(self, hub):
         try:
             inverter_data = await hub.async_read_holding_registers(
-                unit=hub._modbus_addr, address=self.bapack_number_address, count=1
+                unit=hub._modbus_addr, address=self.batt_pack_number_address, count=1
             )
             if not inverter_data.isError():
                 decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
