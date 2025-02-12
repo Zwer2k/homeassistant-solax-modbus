@@ -3757,7 +3757,7 @@ BATTERY_BMS_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
         register=0x900E,
-        scale=0.1,
+        #scale=0.1,
         allowedtypes=BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
