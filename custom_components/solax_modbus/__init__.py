@@ -140,6 +140,7 @@ empty_hub_device_group_lambda = lambda: SimpleNamespace(
             sensors=[],
             inputBlocks={},
             holdingBlocks={},
+            computedSensors={},
             readPreparation=None,  # function to call before read group
             readFollowUp=None,  # function to call after read group
         )
@@ -1083,8 +1084,15 @@ class SolaXModbusHub:
             self.plugin.localDataCallback(self)
         if not self.localsLoaded:
             await self._hass.async_add_executor_job(self.loadLocalData)
-        for key, descr in self.computedSensors.items():
-            # Do NOT call modbus_data_updated() from here Race Condition:it calls hub.rebuild_blocks() before async_add_entities is called.
+
+        if group.readFollowUp is not None:
+            if not await group.readFollowUp(self.data, data):
+                _LOGGER.warning(f"device group check not success")
+                return True
+
+        for reg in group.computedSensors:
+            descr = group.computedSensors[reg]
+            key = descr.key
             data[key] = descr.value_function(0, descr, data)
             sens = self.sensorEntities[key]
             _LOGGER.debug(f"{self._name}: quickly updating state for computed sensor {sens} {key} {data[descr.key]} ")
@@ -1092,10 +1100,6 @@ class SolaXModbusHub:
                 try: sens.modbus_data_updated() # publish state to GUI and automations faster - assuming enabled, otherwise exception
                 except Exception: _LOGGER.debug(f"{self._name}: cannot send update for {key} - probably disabled ")
 
-        if group.readFollowUp is not None:
-            if not await group.readFollowUp(self.data, data):
-                _LOGGER.warning(f"device group check not success")
-                return True
 
         #for key, value in data.items(): # remove for issue #1440, but then does not recognize communication errors anymore
         #    self.data[key] = value # remove for issue #1440, but then comm errors are not detected
@@ -1282,7 +1286,8 @@ class SolaXModbusHub:
                 hub_device_group.readFollowUp = device_group.readFollowUp
                 hub_device_group.holdingBlocks = self.splitInBlocks(holdingRegs)
                 hub_device_group.inputBlocks = self.splitInBlocks(inputRegs)
-                #self.computedSensors = computedRegs # moved outside the loops
+                hub_device_group.computedSensors = device_group.computedSensors
+
                 for i in hub_device_group.holdingBlocks: _LOGGER.info(f"{self._name} - interval {interval}s: adding holding block: {', '.join('0x{:x}'.format(num) for num in i.regs)}")
                 for i in hub_device_group.inputBlocks: _LOGGER.info(f"{self._name} - interval {interval}s: adding input block: {', '.join('0x{:x}'.format(num) for num in i.regs)}")
                 #_LOGGER.debug(f"holdingBlocks: {hub_device_group.holdingBlocks}")

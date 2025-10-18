@@ -4065,11 +4065,10 @@ class battery_config(base_battery_config):
                 unit=hub._modbus_addr, address=self.bdu_number_address, count=1
             )
             if not inverter_data.isError():
-                decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
-                self.number_bdu = decoder.decode_16bit_int()
+                self.number_bdu = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")
                 return self.number_bdu
         except Exception as ex:
-            _LOGGER.warning(f"{hub.name}: attempt to read Bat quantity failed at 0x{address:x}", exc_info=True)
+            _LOGGER.warning(f"{hub.name}: attempt to read Bat quantity failed at 0x{self.bdu_number_address:x}", exc_info=True)
 
     async def get_batt_pack_quantity(self, hub):
         if self.number_cels_in_parallel == None:
@@ -4183,7 +4182,7 @@ class battery_config(base_battery_config):
                 self.number_cels_in_parallel = (val >> 8) & 0xFF  # high byte
                 self.number_strings = val & 0xFF                  # low byte
         except Exception as ex:
-            _LOGGER.warning(f"{hub.name}: attempt to read BaPack number failed at 0x{address:x}", exc_info=True)
+            _LOGGER.warning(f"{hub.name}: attempt to read BaPack number failed at 0x{self.batt_pack_number_address:x}", exc_info=True)
 
     async def init_batt_pack_serials(self, hub):
         retry = 0
