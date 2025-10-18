@@ -45,17 +45,23 @@ Only Ethernet mode tested so far.
 
 [AliExpress](https://www.aliexpress.com/item/32888961582.html)
 
-### For Sofar Solar: LAN Stick Logger LSE-3
+### For Sofar Solar
 
-Easy to install: Replace the LSW-3 Wifi logger that comes with the inverter by the LSE-3 ethernet logger. However it comes with some caveats. See the [Sofar FAQ](./sofar-faq.md) for more information.
+#### WiFi Stick Logger LSW-3
 
-![Image of LSE-3 Logger](images/adaptor-rs485-sofar-lse3-logger.png)
+The standard LSW-3 Wifi logger that comes with the inverter.
 
-Configure the connection to its IP address on port 8899.
+![Image of LSW-3 Logger](images/adaptor-sofar-lsw3-wifi-logger.png)
 
-Tested with LSE-3 firmware version ME_0D_270A_1.09.
+Please see the [Sofar Installation](sofar-installation.md) for more information.
 
-Note that port 8899 is also open on the LSW-3 logger, but any ModBus TCP connection attempts time out here.
+#### LAN Stick Logger LSE-3
+
+Replace the LSW-3 Wifi logger that comes with the inverter by the LSE-3 ethernet logger.
+
+![Image of LSE-3 Logger](images/adaptor-sofar-lse3-lan-logger.png)
+
+Please see the [Sofar Installation](sofar-installation.md) for more information.
 
 ### [SolaX PocketWiFi 3.0](https://www.solaxpower.com/monitoring-dongles/)
 
@@ -69,6 +75,13 @@ Note that port 8899 is also open on the LSW-3 logger, but any ModBus TCP connect
 An ESP8266 dongle with Tasmota installed and setup as a modbus bridge works great. 
 Use a RS485 module to convert the modbus serial interface to RS485.
 This works flawless for my Solis hybrid inverter.
+
+### [ESPHome Modbus Bridge on ESP8266/ESP32 (Wi-Fi/Ethernet)](https://github.com/rosenrot00/esphome_modbus_bridge)
+
+Running ESPHome as a Modbus TCP to RTU bridge, the setup provides stable and reliable communication through an ESP8266 or ESP32.
+An RS485 transceiver manages the UART-to-RS485 conversion, enabling data exchange.
+This setup has been successfully tested with a SolaX hybrid inverter and runs reliably when powered from the inverter’s 12V output, using a 12V-to-5V step-down converter.
+For Ethernet connectivity, an ESP32 module such as the WT32-ETH01 can be used.
 
 ## Untested but should work according to the specs...
 

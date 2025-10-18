@@ -5,7 +5,7 @@ from dataclasses import dataclass
 # from homeassistant.components.select import SelectEntityDescription
 # from homeassistant.components.button import ButtonEntityDescription
 # from homeassistant.components.switch import SwitchEntityDescription
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder, Endian
+from .pymodbus_compat import DataType, convert_from_registers
 from .const import *
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,8 +62,8 @@ async def async_read_serialnr(hub, address, swapbytes):
     try:
         inverter_data = await hub.async_read_input_registers(unit=hub._modbus_addr, address=address, count=8)
         if not inverter_data.isError():
-            decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
-            res = decoder.decode_string(14).decode("ascii")
+            raw = convert_from_registers(inverter_data.registers[0:8], DataType.STRING, "big")
+            res = raw.decode("ascii", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
             if swapbytes:
                 ba = bytearray(res, "ascii")  # convert to bytearray for swapping
                 ba[0::2], ba[1::2] = ba[1::2], ba[0::2]  # swap bytes ourselves - due to bug in Endian.LITTLE ?
@@ -107,8 +107,8 @@ class SolisModbusSensorEntityDescription(BaseModbusSensorEntityDescription):
     """A class that describes Solis Modbus sensor entities."""
 
     allowedtypes: int = ALLDEFAULT  # maybe 0x0000 (nothing) is a better default choice
-    order16: int = Endian.BIG
-    order32: int = Endian.BIG
+    order16: str = "big"
+    order32: str = "big"
     unit: int = REGISTER_U16
     register_type: int = REG_HOLDING
 
@@ -510,7 +510,7 @@ BUTTON_TYPES = [
     SolisModbusButtonEntityDescription(
         name="Update Discharge Times 6",
         key="update_discharge_times_6",
-        register=43787,
+        register=43788,
         allowedtypes=HYBRID,
         write_method=WRITE_MULTI_MODBUS,
         icon="mdi:battery-clock",
@@ -2738,7 +2738,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="battery_charge_direction",
         register=33135,
         register_type=REG_INPUT,
-        entity_registry_enabled_default=False,
+        entity_registry_enabled_default=False, # needed in value function
         allowedtypes=HYBRID,
     ),
     SolisModbusSensorEntityDescription(
@@ -2855,6 +2855,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_battery_input_solis,
         allowedtypes=HYBRID,
+        depends_on=("battery_power","battery_charge_direction",),
         icon="mdi:battery-arrow-up",
     ),
     SolisModbusSensorEntityDescription(
@@ -2864,6 +2865,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_battery_output_solis,
+        depends_on=("battery_power","battery_charge_direction",),
         allowedtypes=HYBRID,
         icon="mdi:battery-arrow-down",
     ),
@@ -4403,8 +4405,12 @@ class solis_fb00_plugin(plugin_base):
             invertertype = HYBRID | X3  # Hybrid Gen5 10kW - HV
         elif seriesnumber.startswith("1805"):
             invertertype = HYBRID | X3  # PV Only Gen5 5-20kW
+        elif seriesnumber.startswith("2051"):
+            invertertype = HYBRID | X1  # Hybrid Gen6 EO1p-48v 5kW
         elif seriesnumber.startswith("6031"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3105 / 3122 Model 6kW - 48V
+        elif seriesnumber.startswith("6041"):
+            invertertype = HYBRID | X1  # Hybrid Gen5 4106 3kW - 48V
         elif seriesnumber.startswith("1031"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3104 Model 5kW - 48V
         # elif seriesnumber.startswith('abc123'):  invertertype = PV | X3 # Comment
@@ -4448,7 +4454,7 @@ plugin_instance = solis_fb00_plugin(
     SELECT_TYPES=SELECT_TYPES,
     SWITCH_TYPES=SWITCH_TYPES,
     block_size=40,
-    order16=Endian.BIG,
-    order32=Endian.BIG,
+    #order16="big",
+    order32="big",
     auto_block_ignore_readerror=True,
 )

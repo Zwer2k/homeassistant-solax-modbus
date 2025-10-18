@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from homeassistant.components.number import NumberEntityDescription
 from homeassistant.components.select import SelectEntityDescription
 from homeassistant.components.button import ButtonEntityDescription
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder, Endian
+from .pymodbus_compat import DataType, convert_from_registers
 from custom_components.solax_modbus.const import *
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,8 +60,8 @@ async def async_read_serialnr(hub, address, swapbytes):
     try:
         inverter_data = await hub.async_read_input_registers(unit=hub._modbus_addr, address=address, count=8)
         if not inverter_data.isError():
-            decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
-            res = decoder.decode_string(14).decode("ascii")
+            raw = convert_from_registers(inverter_data.registers[0:8], DataType.STRING, "big")
+            res = raw.decode("ascii", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
             if swapbytes:
                 ba = bytearray(res, "ascii")  # convert to bytearray for swapping
                 ba[0::2], ba[1::2] = ba[1::2], ba[0::2]  # swap bytes ourselves - due to bug in Endian.LITTLE ?
@@ -93,6 +93,11 @@ class SolisModbusNumberEntityDescription(BaseModbusNumberEntityDescription):
 @dataclass
 class SolisModbusSelectEntityDescription(BaseModbusSelectEntityDescription):
     allowedtypes: int = ALLDEFAULT  # maybe 0x0000 (nothing) is a better default choice
+    
+
+@dataclass
+class SolisModbusSwitchEntityDescription(BaseModbusSwitchEntityDescription):
+    allowedtypes: int = ALLDEFAULT  # maybe 0x0000 (nothing) is a better default choice
 
 
 @dataclass
@@ -100,13 +105,20 @@ class SolisModbusSensorEntityDescription(BaseModbusSensorEntityDescription):
     """A class that describes Solis Modbus sensor entities."""
 
     allowedtypes: int = ALLDEFAULT  # maybe 0x0000 (nothing) is a better default choice
-    order16: int = Endian.BIG
-    order32: int = Endian.BIG
+    order16: str = "big"
+    order32: str = "big"
     unit: int = REGISTER_U16
     register_type: int = REG_HOLDING
 
 
 # ====================================== Computed value functions  =================================================
+
+# This value function converts the bits to the number
+def mutate_bit_in_register(bit: int, state: int, descr: str, datadict: dict):
+    value = datadict.get(descr, 0)
+    _LOGGER.debug(f">>> Old value of {descr}: {value}")
+    new_value = (value & ~(1 << bit)) | (state << bit)
+    return new_value
 
 
 def value_function_timingmode(initval, descr, datadict):
@@ -830,9 +842,96 @@ NUMBER_TYPES = [
         max_exceptions=MAX_CURRENTS,
         entity_category=EntityCategory.CONFIG,
     ),
+    SolisModbusNumberEntityDescription(
+        name="Special Settings",
+        key="special_settings",
+        register=43249,
+        icon="mdi:switch",
+        fmt="i",
+        native_min_value=0,
+        native_max_value=4096,
+        native_step=1,
+        allowedtypes=HYBRID,
+        entity_category=EntityCategory.CONFIG,
+    ),
 ]
 
 # ================================= Select Declarations ============================================================
+
+SWITCH_TYPES = [
+    SolisModbusSwitchEntityDescription(
+        name="MPPT Parallel Function",
+        key="mppt_parallel_function",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=0,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="IgFollow",
+        key="igfollow",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=1,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="Relay protection",
+        key="relay_protection",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=2,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="I-leak protection",
+        key="i_leak_protection",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=3,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="PV iso Protection",
+        key="pv_iso_protection",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=4,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="Grid-interference protection",
+        key="grid_interference_protection",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=5,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="DC component of grid current protection switch",
+        key="dc_component_of_grid_current_protection_switch",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=6,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+    SolisModbusSwitchEntityDescription(
+        name="Const Voltage Mode Enable",
+        key="const_voltage_mode_enable",
+        register=43249,
+        icon="mdi:switch",
+        register_bit=7,
+        sensor_key="special_settings",
+        value_function=mutate_bit_in_register,
+    ),
+]
 
 SELECT_TYPES = [
     SolisModbusSelectEntityDescription(
@@ -1492,8 +1591,8 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         name="Battery Charge Direction",
         key="battery_charge_direction",
         register=33135,
-        register_type=REG_INPUT,
-        entity_registry_enabled_default=False,
+        register_type=REG_INPUT, 
+        entity_registry_enabled_default=False, 
         allowedtypes=HYBRID,
     ),
     SolisModbusSensorEntityDescription(
@@ -1598,7 +1697,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         register=33149,
         register_type=REG_INPUT,
         unit=REGISTER_S32,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False, # bug #1495 value function from const.py relies on this, so should not be disabled
         allowedtypes=HYBRID,
         icon="mdi:home",
     ),
@@ -1610,6 +1709,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_battery_input_solis,
         allowedtypes=HYBRID,
+        depends_on=("battery_power","battery_charge_direction",),
         icon="mdi:battery-arrow-up",
     ),
     SolisModbusSensorEntityDescription(
@@ -1619,6 +1719,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_function=value_function_battery_output_solis,
+        depends_on=("battery_power","battery_charge_direction",),
         allowedtypes=HYBRID,
         icon="mdi:battery-arrow-down",
     ),
@@ -2138,14 +2239,14 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
             190: "On",
             222: "Off",
         },
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
     ),
     SolisModbusSensorEntityDescription(
         name="Battery Minimum SOC",
         key="battery_minimum_soc",
         register=43011,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         icon="mdi:battery-sync",
     ),
@@ -2153,7 +2254,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         name="Force Charge SOC",
         key="force_charge_soc",
         register=43018,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         icon="mdi:battery-sync",
     ),
@@ -2161,7 +2262,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         name="Backup Mode SOC",
         key="backup_mode_soc",
         register=43024,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         icon="mdi:battery-sync",
     ),
@@ -2173,7 +2274,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
             0: "Off",
             16: "On",
         },
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID | X1,
     ),
     SolisModbusSensorEntityDescription(
@@ -2186,7 +2287,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
             64: "Off & Unbalanced output",
             80: "On & Unbalanced output",
         },
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID | X3,
     ),
     SolisModbusSensorEntityDescription(
@@ -2199,7 +2300,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         scale=100,
         rounding=0,
         allowedtypes=HYBRID,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
     ),
     SolisModbusSensorEntityDescription(
         name="Battery ChargeDischarge Current",
@@ -2211,7 +2312,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         scale=0.1,
         rounding=1,
         allowedtypes=HYBRID,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SolisModbusSensorEntityDescription(
@@ -2224,7 +2325,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         scale=0.1,
         rounding=1,
         allowedtypes=HYBRID,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SolisModbusSensorEntityDescription(
@@ -2236,7 +2337,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         register=43118,
         scale=0.1,
         rounding=1,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
     ),
@@ -2249,7 +2350,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         register=43141,
         scale=0.1,
         rounding=1,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
     ),
@@ -2262,7 +2363,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         register=43142,
         scale=0.1,
         rounding=1,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
     ),
@@ -2271,7 +2372,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_hours",
         register=43143,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2281,7 +2382,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_minutes",
         register=43144,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2291,7 +2392,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_hours",
         register=43145,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2301,7 +2402,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_minutes",
         register=43146,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2311,7 +2412,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_hours",
         register=43147,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2321,7 +2422,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_minutes",
         register=43148,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2330,7 +2431,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         name="Timed Discharge End Hours",
         key="timed_discharge_end_hours",
         register=43149,
-        native_unit_of_measurement=UnitOfTime.HOURS,
+        #native_unit_of_measurement=UnitOfTime.HOURS,
         entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
@@ -2341,7 +2442,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_end_minutes",
         register=43150,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2352,7 +2453,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_hours_2",
         register=43153,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2362,7 +2463,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_minutes_2",
         register=43154,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2372,7 +2473,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_hours_2",
         register=43155,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2382,7 +2483,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_minutes_2",
         register=43156,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2392,7 +2493,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_hours_2",
         register=43157,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2402,7 +2503,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_minutes_2",
         register=43158,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2412,7 +2513,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_end_hours_2",
         register=43159,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2422,7 +2523,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_end_minutes_2",
         register=43160,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2433,7 +2534,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_hours_3",
         register=43163,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2443,7 +2544,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_start_minutes_3",
         register=43164,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2453,7 +2554,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_hours_3",
         register=43165,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2463,7 +2564,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_charge_end_minutes_3",
         register=43166,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2473,7 +2574,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_hours_3",
         register=43167,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2483,7 +2584,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_start_minutes_3",
         register=43168,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2493,7 +2594,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_end_hours_3",
         register=43169,
         native_unit_of_measurement=UnitOfTime.HOURS,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
@@ -2503,10 +2604,19 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
         key="timed_discharge_end_minutes_3",
         register=43170,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        entity_registry_enabled_default=False,
+        #entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:battery-clock",
+    ),
+    SolisModbusSensorEntityDescription(
+        name="Special Settings",
+        key="special_settings",
+        register=43249,
+        icon="mdi:switch",
+        entity_registry_enabled_default=True,
+        allowedtypes=HYBRID,
+        #entity_category=EntityCategory.CONFIG,
     ),
 ]
 
@@ -2560,8 +2670,12 @@ class solis_plugin(plugin_base):
             invertertype = HYBRID | X3  # Hybrid Gen5 10kW - HV
         elif seriesnumber.startswith("1805"):
             invertertype = HYBRID | X3  # PV Only Gen5 5-20kW
+        elif seriesnumber.startswith("2051"):
+            invertertype = HYBRID | X1  # Hybrid Gen6 EO1p-48v 5kW
         elif seriesnumber.startswith("6031"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3105 / 3122 Model 6kW - 48V
+        elif seriesnumber.startswith("6041"):
+            invertertype = HYBRID | X1  # Hybrid Gen5 3106 3kW - 48V
         elif seriesnumber.startswith("1031"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3104 Model 5kW - 48V
         # elif seriesnumber.startswith('abc123'):  invertertype = PV | X3 # Comment
@@ -2603,9 +2717,10 @@ plugin_instance = solis_plugin(
     NUMBER_TYPES=NUMBER_TYPES,
     BUTTON_TYPES=BUTTON_TYPES,
     SELECT_TYPES=SELECT_TYPES,
-    SWITCH_TYPES=[],
+    SWITCH_TYPES=SWITCH_TYPES,
     block_size=40,
-    order16=Endian.BIG,
-    order32=Endian.BIG,
+    #order16="big",
+    order32="big",
     auto_block_ignore_readerror=True,
 )
+

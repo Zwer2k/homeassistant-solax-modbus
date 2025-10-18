@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from homeassistant.components.number import NumberEntityDescription
 from homeassistant.components.select import SelectEntityDescription
 from homeassistant.components.button import ButtonEntityDescription
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder, Endian
+from .pymodbus_compat import DataType, convert_from_registers
 from custom_components.solax_modbus.const import *
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,10 +67,10 @@ _simple_switch = {0: "off", 1: "on"}
 async def _read_serialnr(hub, address=10000, count=8, swapbytes=False):
     res = None
     try:
-        data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=count)
-        if not data.isError():
-            decoder = BinaryPayloadDecoder.fromRegisters(data.registers, byteorder=Endian.BIG)
-            res = decoder.decode_string(count * 2).decode("ascii")
+        inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=count)
+        if inverter_data is not None and not inverter_data.isError():
+            raw = convert_from_registers(inverter_data.registers[0:count], DataType.STRING, "big")
+            res = raw.decode("ascii", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
             if swapbytes:
                 ba = bytearray(res, "ascii")  # convert to bytearray for swapping
                 ba[0::2], ba[1::2] = ba[1::2], ba[0::2]  # swap bytes ourselves - due to bug in Endian.Little ?
@@ -89,10 +89,9 @@ async def _read_serialnr(hub, address=10000, count=8, swapbytes=False):
 async def _read_model(hub, address=10008):
     res = None
     try:
-        data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=1)
-        if not data.isError():
-            decoder = BinaryPayloadDecoder.fromRegisters(data.registers, byteorder=Endian.BIG)
-            res = decoder.decode_16bit_uint()
+        inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=1)
+        if inverter_data is not None and not inverter_data.isError():
+            res = convert_from_registers(inverter_data.registers[0:1], DataType.UINT16, "big")
             hub._invertertype = res
     except Exception as ex:
         _LOGGER.warning(f"{hub.name}: attempt to read model failed at 0x{address:x}", exc_info=True)
@@ -151,44 +150,23 @@ def _model_str(val):
 
 def _flag_list(v, flags, empty=""):
     # v int, flags array of bit/string, empty string
-    v = format(v, "b")  # [::-1] #optimized, don't reverse each time
-    n = len(v)
     ret = []
-    for i in range(0, min(n, len(flags))):
-        if v[n - i - 1] == "1":
-            ret.append(flags[i])
-
+    n = len(flags)
+    for i in range(0, n):
+        if v == 0: break
+        if v & 1 : ret.append(flags[i])
+        v = v >> 1
+    if v > 0: #unknown flags?
+        ret.append("unk:0x"+format(v<<n, "x"))
     return empty if not ret else ",".join(ret)
 
 
-_op_flags = [
-    "WorkMode Abn.",
-    "Emergency Stop",
-    "DC Abn.",
-    "Mains Abn.",
-    "OffGrid Dis.",
-    "Batt. Abn.",
-    "Cmd Stop",
-    "Soc Lowerand No PV",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",  # 8x unused
-    "Cmd PowerLimit",
-    "OverFreq PowerLimit",
-    "OverTemp PowerLimit",
-    "OverCurr PowerLimit",
-    "Reactive PowerLimit",
-    "Feed in Grid PowerLimit",
-    "Slow Loading",
-    "OverVolt PowerLimit",
-    "System PowerLim",
-]
 
+def _fn_flags(flags, empty=""):
+    return lambda v, *a: _flag_list(v, flags, empty)
+
+def _fn_simple_hex(v, descr, dd):
+    return "0x{:x}".format(v)
 
 def _fw_str(wa, *a):
     ba = [b for w in wa for b in w.to_bytes(2)]
@@ -199,18 +177,22 @@ _mppt_dd = {0: "off", 0x7FFF: "on"}  # dict uses 16 bit signed!?, 0xffff not pos
 _mppt_mask = 0xFF  # max 8 mppts
 _mppt_list = ["mppt1", "mppt2", "mppt3", "mppt4", "mppt5", "mppt6", "mppt7", "mppt8"]
 
+def _fn_mppt_mask_ex(v, _mask):
+    return "off" if v == 0 else "on" if v & _mask == _mask else _flag_list(v, _mppt_list, v)
 
 def _fn_mppt_mask(v, descr, dd):
-    return "off" if v == 0 else "on" if v & _mppt_mask == _mppt_mask else _flag_list(v, _mppt_list, "unknown")
-
+    return _fn_mppt_mask_ex(v, _mppt_mask)
 
 _nan = float("NaN")
 
 
-def value_function_house_load(initval, descr, datadict):
+def value_function_house_total_load(initval, descr, datadict):
     v = datadict.get("inverter_load", _nan) - datadict.get("measured_power", _nan)
     return None if v != v else v  # test nan
 
+def value_function_house_normal_load(initval, descr, datadict):
+    v = datadict.get("inverter_load", _nan) - datadict.get("measured_power", _nan) - datadict.get("backup_power", _nan)
+    return None if v != v else v  # test nan
 
 # =================================================================================================
 
@@ -295,6 +277,20 @@ BUTTON_TYPES = [
         icon="mdi:restart",
         command=1,
     ),
+    SolintegModbusButtonEntityDescription(
+        name="Off-grid",
+        key="control_offgrid_on",
+        register=50200,
+        icon="mdi:stop",
+        command=1,
+    ),
+    SolintegModbusButtonEntityDescription(
+        name="On-grid",
+        key="control_offgrid_off",
+        register=50200,
+        icon="mdi:play",
+        command=0,
+    ),
 ]
 
 # ================================= Number Declarations ============================================================
@@ -351,7 +347,7 @@ NUMBER_TYPES = [
         fmt="i",
         native_min_value=0,
         native_max_value=200,
-        native_step=1,
+        native_step=0.1,
         mode="box",
         scale=0.1,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
@@ -366,7 +362,7 @@ NUMBER_TYPES = [
         fmt="i",
         native_min_value=0,
         native_max_value=200,
-        native_step=1,
+        native_step=0.1,
         mode="box",
         scale=0.1,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
@@ -381,7 +377,7 @@ NUMBER_TYPES = [
         fmt="i",
         native_min_value=-100,
         native_max_value=100,
-        native_step=1,
+        native_step=0.1,
         unit=REGISTER_S16,
         mode="box",
         scale=0.1,
@@ -389,6 +385,22 @@ NUMBER_TYPES = [
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID,
         icon="mdi:export",
+    ),
+    SolintegModbusNumberEntityDescription(
+        name="Import Limit",
+        key="import_limit_value",
+        register=50009,
+        fmt="i",
+        native_min_value=0,
+        native_max_value=100,
+        native_step=0.1,
+        unit=REGISTER_U16,
+        mode="box",
+        scale=0.1,
+        native_unit_of_measurement= UnitOfPower.KILO_WATT,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:import",
     ),
 ]
 
@@ -399,7 +411,16 @@ SELECT_TYPES = [
         name="Working Mode",
         key="working_mode",
         register=50000,
-        option_dict={257: "General", 258: "Economic", 259: "UPS", 512: "Off-Grid Mode"},
+        option_dict={
+            0x101: "General", 
+            0x102: "Economic", 
+            0x103: "UPS", 
+            0x104: "PeakShift",
+            0x105: "Feed-In",
+            0x200: "Off-Grid",
+            #0x301, 0x302, 0x303 : EMS Modes
+            0x400: "ToU",
+        },
         entity_category=EntityCategory.CONFIG,
         allowedtypes=HYBRID,
         icon="mdi:dip-switch",
@@ -429,6 +450,15 @@ SELECT_TYPES = [
         option_dict=_simple_switch,
         entity_category=EntityCategory.CONFIG,
         icon="mdi:export",
+    ),
+    SolintegModbusSelectEntityDescription(
+        name="Import Limit Switch",
+        key="import_limit_switch",
+        register=50007,
+        option_dict=_simple_switch,
+        entity_category=EntityCategory.CONFIG,
+        allowedtypes=HYBRID,
+        icon="mdi:scale-unbalanced",
     ),
     SolintegModbusSelectEntityDescription(
         name="Battery SOC Protection On Grid",
@@ -504,7 +534,117 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         scan_group=SCAN_GROUP_MEDIUM,
         register=10110,
         unit=REGISTER_U32,
-        scale=lambda v, *a: _flag_list(v, _op_flags, "ok"),
+        scale=_fn_flags([
+            "WorkMode Abn.",
+            "Emergency Stop",
+            "DC Abn.",
+            "Mains Abn.",
+            "OffGrid Dis.",
+            "Batt. Abn.",
+            "Cmd Stop",
+            "SocLow&NoPV",
+            "B8",# unused
+            "B9",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "OffGrid",
+            "B15",
+            "Cmd PLim",
+            "OFreq PLim",
+            "OTemp PLim",
+            "OCurr PLim",
+            "Reactive PLim",
+            "Exp PLim",
+            "Slow Loading",
+            "OVolt PLim",
+            "System PLim",
+        ]),
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Fault Flags1",
+        key="fault_flags1",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        scan_group=SCAN_GROUP_MEDIUM,
+        register=10112,
+        unit=REGISTER_U32,
+        #scale=_fn_simple_hex,
+        scale=_fn_flags([
+            "Mains Lost",
+            "Grid Voltage Fault",
+            "Grid Frequency Fault",
+            "DCI Fault",
+            "ISO Over Limitation",
+            "GFCI Fault",
+            "PV Over Voltage",
+            "Bus Voltage Fault",
+            "Inverter OverTemperature",
+        ]),
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Fault Flags2",
+        key="fault_flags2",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        scan_group=SCAN_GROUP_MEDIUM,
+        register=10114,
+        unit=REGISTER_U32,
+        scale=_fn_flags([
+            "",
+            "SPI Fault",
+            "E2 Fault",
+            "GFCI Device Fault",
+            "AC Transducer Fault",
+            "Relay Check Fail",
+            "Internal Fan Fault",
+            "External Fan Fault",
+        ]),
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Fault Flags3",
+        key="fault_flags3",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        scan_group=SCAN_GROUP_MEDIUM,
+        register=10120,
+        unit=REGISTER_U32,
+        scale=_fn_flags([
+            "Bus Hardware Fault", #?
+            "PV Power Low",
+            "Batt.Voltage Fault",
+            "BAK Voltage Fault",
+            "Bus Voltage Low",
+            "Sys Hardware Fault",
+            "BAK Over Power",
+            "Inverter Over Voltage",
+            "Inverter Over Freq",
+            "Inverter Over Current",
+            "Phase Order Err",
+        ]),
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Fault ARM Flags1",
+        key="fault_arm_flags1",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        scan_group=SCAN_GROUP_MEDIUM,
+        register=18000,
+        unit=REGISTER_U32,
+        scale=_fn_flags([
+            "SCI Fault",
+            "FLASH Fault",
+            "Meter Comm Fault",
+            "BMS Comm Fault",
+        ]),
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Fault ARM Flags2",
+        key="fault_arm_flags2",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        scan_group=SCAN_GROUP_MEDIUM,
+        register=18004,
+        unit=REGISTER_U32,
+        scale=_fn_flags([
+            "BMS Comm Fault",
+        ]),
     ),
     SolintegModbusSensorEntityDescription(
         name="Energy Generation Total",
@@ -550,12 +690,42 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         scale=0.1,
     ),
     SolintegModbusSensorEntityDescription(
-        name="Inverter Temperature",
-        key="inverter_temperature",
+        name="Inv Temperature Phase-R",
+        key="inv_temp_r",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         register=11032,
+        scale=0.1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Inv.Temperature Phase-S",
+        key="inv_temp_s",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=11033,
+        scale=0.1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Inv.Temperature Phase-T",
+        key="inv_temp_t",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=11034,
+        scale=0.1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SolintegModbusSensorEntityDescription(
+        name="Inv.Temperature Radiator",
+        key="inv_temperature_rad",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        register=11035,
         scale=0.1,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -794,6 +964,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         # register = 30256, not needed, take sign from power
         # scale = {0: "discharging", 1: "charging"},
         value_function=lambda v, d, dd: ["discharge", "charge"][dd.get("battery_power", 0) <= 0],
+        depends_on= ("battery_power", ),
         entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
         scan_group=SCAN_GROUP_MEDIUM,
@@ -986,7 +1157,7 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         register=30230,
         unit=REGISTER_S32,
-        scan_group=SCAN_GROUP_MEDIUM,
+        scan_group=SCAN_GROUP_FAST,
         allowedtypes=HYBRID | ALL_EPS_GROUP,
     ),
     SolintegModbusSensorEntityDescription(
@@ -1121,21 +1292,43 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         icon="mdi:home-export-outline",
     ),
     SolintegModbusSensorEntityDescription(
-        name="House Load",
-        key="house_load",
-        value_function=value_function_house_load,
+        name="House Total Load",        #incl. backup
+        key="house_total_load",
+        value_function=value_function_house_total_load,
+        depends_on= ("inverter_load", "measured_power", ),
         scan_group=SCAN_GROUP_FAST,
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:home",
     ),
+    SolintegModbusSensorEntityDescription(
+        name="House Normal Load",       #w/o backup
+        key="house_normal_load",
+        value_function=value_function_house_normal_load,
+        depends_on= ("inverter_load", "measured_power", "backup_power", ),
+        scan_group=SCAN_GROUP_FAST,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:home",
+    ),
+
     # internal sensors are only used for polling values for selects, etc
     # no need for name, etc
     SolintegModbusSensorEntityDescription(
         key="working_mode",
         register=50000,
-        scale={257: "General", 258: "Economic", 259: "UPS", 512: "Off-Grid Mode"},
+        scale={
+            0x101: "General", 
+            0x102: "Economic", 
+            0x103: "UPS", 
+            0x104: "PeakShift",
+            0x105: "Feed-In",
+            0x200: "Off-Grid",
+            #0x301, 0x302, 0x303 : EMS Modes
+            0x400: "ToU",
+        },
         internal=True,
         # allowedtypes = HYBRID,
     ),
@@ -1164,6 +1357,19 @@ SENSOR_TYPES: list[SolintegModbusSensorEntityDescription] = [
         key="export_limit_value",
         register=25103,
         unit=REGISTER_S16,
+        scale=0.1,
+        internal=True,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="import_limit_switch",
+        register=50007,
+        scale=_simple_switch,
+        internal=True,
+    ),
+    SolintegModbusSensorEntityDescription(
+        key="import_limit_value",
+        register=50009,
+        unit=REGISTER_U16,
         scale=0.1,
         internal=True,
     ),
@@ -1244,8 +1450,12 @@ class solinteg_plugin(plugin_base):
             seriesnumber = "unknown"
 
         model = await _read_model(hub)
-        self.inverter_model = _model_str(model)  # as string
-        bh, bl = model // 256, model % 256
+        if model is None:
+            _LOGGER.error(f"{hub.name}: could not read model at 0x{10008:x}")
+            bh, bl = 0, 0
+        else:
+            self.inverter_model = _model_str(model)  # as string
+            bh, bl = model // 256, model % 256
 
         invertertype = 0
         if bh in [30, 31, 32]:
@@ -1265,9 +1475,9 @@ class solinteg_plugin(plugin_base):
 
         if invertertype > 0:
             data = hub.data
+            _self_mppt_mask = 2**mppt - 1  # mask
             # prepare mppt list
-            data["mppt_count"] = mppt
-            data["mppt_mask"] = 2**mppt - 1  # mask
+            #data["mppt_mask"] = _self_mppt_mask
             sel_dd = _mppt_dd.copy()  # copy
             for i in range(mppt):
                 sel_dd[2**i] = f"mppt{i+1}"
@@ -1275,6 +1485,12 @@ class solinteg_plugin(plugin_base):
             for sel in self.SELECT_TYPES:
                 if sel.key == "shadow_scan":
                     sel.option_dict = sel_dd
+                    break
+
+            #use own mask
+            for sel in self.SENSOR_TYPES:
+                if sel.key == "shadow_scan":
+                    sel.scale = lambda v, descr, dd: _fn_mppt_mask_ex(v, _self_mppt_mask)
                     break
 
             read_eps = configdict.get(CONF_READ_EPS, DEFAULT_READ_EPS)
@@ -1319,7 +1535,7 @@ plugin_instance = solinteg_plugin(
     SELECT_TYPES=SELECT_TYPES,
     SWITCH_TYPES=[],
     block_size=120,
-    order16=Endian.BIG,
-    order32=Endian.BIG,
+    #order16=Endian.BIG,
+    order32="big",
     # auto_block_ignore_readerror = True
 )
