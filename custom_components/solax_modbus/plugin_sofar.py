@@ -3760,9 +3760,8 @@ BATTERY_BDU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
     ),
     SofarModbusSensorEntityDescription(
         name = "BDU Version",
-        key = "BDU_version",
+        key = "bdu_version",
         native_unit_of_measurement = None,
-        state_class = SensorStateClass.MEASUREMENT,
         entity_category = EntityCategory.DIAGNOSTIC,
         register = 0x609B,
         unit = REGISTER_STR,
@@ -3925,8 +3924,8 @@ BATTERY_BMS_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         entity_registry_enabled_default=False,
     ),
     SofarModbusSensorEntityDescription(
-        name="cell min voltage",
-        key="cell_min_voltage",
+        name="cell max voltage",
+        key="cell_max_voltage",
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         register=0x9069,
@@ -4035,8 +4034,8 @@ class battery_config(base_battery_config):
 
     bdu_number_address = 0x6084
     bdu_inquire_address = 0x60C4
-    bdu_check_address = 0x9090
-    batt_serial_address = 0x9091
+    bdu_check_address = 0x6090
+    batt_serial_address = 0x6091
     batt_serial_len = 10
 
     batt_pack_number_address = 0x900D
@@ -4050,9 +4049,13 @@ class battery_config(base_battery_config):
     number_bdu: int = None  # number of battery BDU
     number_cels_in_parallel: int = None  # number of battery pack cells in parallel
     number_strings: int = None  # number of strings of all battery packs
+    batt_serials = {}
     batt_pack_serials = {}
     selected_batt_nr: int = None
     selected_batt_pack_nr: int = None
+
+    async def init_batt(self, hub, serial_number):
+        self.batt_serials[self.selected_batt_nr] = serial_number
 
     async def init_batt_pack(self, hub, serial_number):
         if not self.batt_pack_serials.__contains__(self.selected_batt_nr):
@@ -4080,6 +4083,16 @@ class battery_config(base_battery_config):
             await self._determine_batt_pack_quantitys(hub)
         return self.number_strings
 
+    async def select_battery(self, hub, batt_nr: int):
+        payload = batt_nr+1
+        _LOGGER.debug(f"select batt-nr: {batt_nr} {hex(payload)}")
+        await hub.async_write_registers_single(
+            unit=hub._modbus_addr, address=self.bdu_inquire_address, payload=payload
+        )
+        await asyncio.sleep(0.3)
+        self.selected_batt_nr = batt_nr
+        return True
+
     async def select_battery_pack(self, hub, batt_nr: int, batt_pack_nr: int):
         faulty_nr = 0
         payload = faulty_nr << 12 | batt_pack_nr << 8 | batt_nr
@@ -4091,6 +4104,11 @@ class battery_config(base_battery_config):
         self.selected_batt_nr = batt_nr
         self.selected_batt_pack_nr = batt_pack_nr
         return True
+
+    async def get_batt_serial(self, hub, batt_nr: int):
+        if not self.batt_serials.__contains__(batt_nr):
+            return None
+        return self.batt_serials[batt_nr]
 
     async def get_batt_pack_serial(self, hub, batt_nr: int, batt_pack_nr: int):
         if not self.batt_pack_serials.__contains__(batt_nr):
@@ -4112,6 +4130,13 @@ class battery_config(base_battery_config):
             _LOGGER.warning(f"Cannot read batt pack serial")
             return None
 
+    async def get_batt_sw_version(self, hub, new_data, key_prefix):
+        sw_version_key = key_prefix + "bdu_version"
+        if not new_data.__contains__(sw_version_key):
+            _LOGGER.info(f"batt software version not received {sw_version_key}")
+            return None
+        return f"BDU: {new_data[sw_version_key]}"
+
     async def get_batt_pack_sw_version(self, hub, new_data, key_prefix):
         sw_version_key = key_prefix + "bms_version"
         if not new_data.__contains__(sw_version_key):
@@ -4119,7 +4144,28 @@ class battery_config(base_battery_config):
             return None
         return f"BMS: V{new_data[sw_version_key]}"
 
-    async def check_battery_on_start(self, hub, old_data, key_prefix, batt_nr: int, batt_pack_nr: int):
+    async def check_battery_on_start(self, hub, old_data, key_prefix, batt_nr: int):
+        if not self.batt_serials.__contains__(batt_nr):
+            return False
+
+        payload = batt_nr+1
+        for retry in range(0, 10):
+            inverter_data = await hub.async_read_holding_registers(
+                unit=hub._modbus_addr, address=self.bdu_check_address, count=1
+            )
+            if inverter_data is not None and not inverter_data.isError():
+                readed = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")
+                ok = readed == payload
+                if not ok:
+                    await asyncio.sleep(0.3)
+                else:
+                    return True
+
+            else:
+                _LOGGER.error(f"can't read batt check register")
+                return False
+
+    async def check_battery_pack_on_start(self, hub, old_data, key_prefix, batt_nr: int, batt_pack_nr: int):
         if not self.batt_pack_serials.__contains__(batt_nr):
             return False
         if not self.batt_pack_serials[batt_nr].__contains__(batt_pack_nr):
@@ -4140,10 +4186,32 @@ class battery_config(base_battery_config):
                     return True
 
             else:
-                _LOGGER.error(f"can't read batt check register")
+                _LOGGER.error(f"can't read batt pack check register")
                 return False
 
-    async def check_battery_on_end(self, hub, old_data, new_data, key_prefix, batt_nr: int, batt_pack_nr: int):
+    async def check_battery_on_end(self, hub, old_data, new_data, key_prefix, batt_nr: int):
+        compare_value = batt_nr
+        inverter_data = await hub.async_read_holding_registers(
+            unit=hub._modbus_addr, address=self.bdu_check_address, count=1
+        )
+        if not inverter_data.isError():
+            if inverter_data is not None and not inverter_data.isError():
+                new_value = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")
+                _LOGGER.debug(f"check_battery_on_end: {hex(new_value)} {hex(compare_value)}")
+            if new_value == compare_value:
+                serial_key = key_prefix + "bdu_serial_number"
+                if not new_data.__contains__(serial_key):
+                    _LOGGER.info(f"batt serial not received {serial_key}")
+                    return False
+                serial = new_data[serial_key]
+                _LOGGER.debug(f"batt serial: {serial}")
+                return serial == self.batt_serials[batt_nr]
+            else:
+                return False
+
+        return False
+
+    async def check_battery_pack_on_end(self, hub, old_data, new_data, key_prefix, batt_nr: int, batt_pack_nr: int):
         # inverter_data = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=0x9045, count=2)
         # if not inverter_data.isError():
         #     decoder = BinaryPayloadDecoder.fromRegisters(inverter_data.registers, byteorder=Endian.BIG)
@@ -4158,7 +4226,7 @@ class battery_config(base_battery_config):
         if not inverter_data.isError():
             if inverter_data is not None and not inverter_data.isError():
                 new_value = convert_from_registers(inverter_data.registers[:1], DataType.UINT16, "big")
-                _LOGGER.debug(f"check_battery_on_end: {hex(new_value)} {hex(compare_value)}")
+                _LOGGER.debug(f"check_battery_pack_on_end: {hex(new_value)} {hex(compare_value)}")
             if new_value == compare_value:
                 serial_key = key_prefix + "pack_serial_number"
                 if not new_data.__contains__(serial_key):
@@ -4184,6 +4252,20 @@ class battery_config(base_battery_config):
         except Exception as ex:
             _LOGGER.warning(f"{hub.name}: attempt to read BaPack number failed at 0x{self.batt_pack_number_address:x}", exc_info=True)
 
+    async def init_batt_serials(self, hub):
+        retry = 0
+        while retry < 5:
+            retry = retry + 1
+            for batt_nr in range(self.number_bdu):
+                await self.select_battery(hub, batt_nr)
+                serial = await self._determinate_batt_serial(hub)
+                if self.batt_serials.__contains__(batt_nr):
+                    if self.batt_serials[batt_nr] != serial:
+                        retry = retry - 1
+            self.batt_serials[batt_nr] = serial
+
+        _LOGGER.info(f"serials {self.batt_serials}")
+
     async def init_batt_pack_serials(self, hub):
         retry = 0
         while retry < 5:
@@ -4201,6 +4283,15 @@ class battery_config(base_battery_config):
                     self.batt_pack_serials[batt_nr][batt_pack_nr] = serial
 
         _LOGGER.info(f"serials {self.batt_pack_serials}")
+
+    async def _determinate_batt_serial(self, hub):
+        inverter_data = await hub.async_read_holding_registers(
+            unit=hub._modbus_addr, address=self.batt_serial_address, count=self.batt_serial_len
+        )
+        if inverter_data is not None and not inverter_data.isError():
+            raw = convert_from_registers(inverter_data.registers[: self.batt_serial_len], DataType.STRING, "big")
+            serial = raw.decode("ascii", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            return serial
 
     async def _determinate_batt_pack_serial(self, hub):
         inverter_data = await hub.async_read_holding_registers(
