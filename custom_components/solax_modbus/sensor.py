@@ -20,6 +20,7 @@ from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
 from .const import (
     CONF_READ_BATTERY,
+    CONF_READ_BATTERY_EXTENDED,
     DOMAIN,
     INVERTER_IDENT,
     REG_HOLDING,
@@ -29,6 +30,8 @@ from .const import (
     SLEEPMODE_NONE,
     SLEEPMODE_ZERO,
     BaseModbusSensorEntityDescription,
+    base_battery_config,
+    battery_device_level,
     is_inputless_computed_sensor,
     matches_modbus_protocol,
 )
@@ -315,6 +318,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     readPreparation,
                     readFollowUpBattery,
                 )
+
+        if entry.options.get(CONF_READ_BATTERY_EXTENDED, False):
+            await _add_extended_battery_entities(hass, entry, hub, hub_name, entities, initial_groups, computedRegs, battery_config)
 
     hub.computedSensors = computedRegs
     async_add_entities(entities)
@@ -961,6 +967,71 @@ class DailyDeltaEnergySensor(SolaXModbusSensor, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return self._attr_extra_state_attributes or {}
+
+
+async def _add_extended_battery_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    hub: Any,
+    hub_name: str,
+    entities: list[SensorEntity],
+    groups: dict[Any, Any],
+    computedRegs: dict[Any, Any],
+    battery_config: base_battery_config,
+) -> None:
+    """Create the devices and sensors of the plugin's additional battery levels."""
+    dev_registry = dr.async_get(hass)
+    for level in await battery_config.async_get_extended_levels(hub):
+        quantity = await level.get_quantity(hub)
+        _LOGGER.info("%s: extended battery level %s: %s instance(s)", hub_name, level.key, quantity)
+        for index in range(quantity):
+            device_ident = level.format(level.key, index)
+            key_prefix = level.format(level.sensor_key_prefix, index)
+            device_info = DeviceInfo(
+                identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, device_ident)}),
+                name=f"{hub_name} {level.format(level.name, index)}",
+                manufacturer=hub.plugin.plugin_manufacturer,
+            )
+            link_parent_device(cast(dict[str, Any], device_info), dev_registry, (DOMAIN, hub_name, INVERTER_IDENT), entry.entry_id)
+
+            async def readPreparation(old_data: Any, level: battery_device_level = level, index: int = index) -> bool:
+                return await level.select(hub, index)
+
+            async def readFollowUp(
+                old_data: Any,
+                new_data: Any,
+                level: battery_device_level = level,
+                index: int = index,
+                key_prefix: str = key_prefix,
+                device_ident: str = device_ident,
+            ) -> bool:
+                if not await level.verify(hub, index, new_data, key_prefix):
+                    return False
+                registry = dr.async_get(hass)
+                device = get_device_by_identifier(registry, (DOMAIN, hub_name, device_ident), entry.entry_id)
+                if device is not None:
+                    changes: dict[str, Any] = {
+                        field: value
+                        for field, value in level.get_device_details(new_data, key_prefix).items()
+                        if getattr(device, field, None) != value
+                    }
+                    if changes:
+                        registry.async_update_device(device.id, **changes)
+                return True
+
+            entityToList(
+                hub,
+                hub_name,
+                entities,
+                groups,
+                computedRegs,
+                device_info,
+                level.sensor_types,
+                "",
+                key_prefix,
+                readPreparation,
+                readFollowUp,
+            )
 
 
 def entityToList(

@@ -41,7 +41,11 @@
       "battery": {
         "title": "Aflæs batteri moduler",
         "data": {
-          "read_battery": "Aktiver aflæsning"
+          "read_battery": "Aktiver aflæsning",
+          "read_battery_extended": "Aflæs udvidede batteridata (eksperimentel)"
+        },
+        "data_description": {
+          "read_battery_extended": "Ekstra enheder som tårnstyring og DC/DC-omformere. Kræver aflæsning af batterimoduler."
         }
       },
       "core": {
@@ -102,7 +106,11 @@
       "battery": {
         "title": "Aflæs batteri moduler",
         "data": {
-          "read_battery": "Aktiver aflæsning"
+          "read_battery": "Aktiver aflæsning",
+          "read_battery_extended": "Aflæs udvidede batteridata (eksperimentel)"
+        },
+        "data_description": {
+          "read_battery_extended": "Ekstra enheder som tårnstyring og DC/DC-omformere. Kræver aflæsning af batterimoduler."
         }
       },
       "core": {

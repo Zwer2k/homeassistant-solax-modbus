@@ -44,6 +44,7 @@ CONF_SolaX_HUB = "solax_hub"
 CONF_BAUDRATE = "baudrate"
 CONF_PLUGIN = "plugin"
 CONF_READ_BATTERY = "read_battery"
+CONF_READ_BATTERY_EXTENDED = "read_battery_extended"
 CONF_CORE_HUB = "read_core_hub"
 CONF_CORE_CONNECTION = "core_connection"
 CONF_ENERGY_DASHBOARD_DEVICE = "energy_dashboard_device"
@@ -60,6 +61,7 @@ DEFAULT_READ_DATAHUB = False
 DEFAULT_BAUDRATE = "19200"
 DEFAULT_PLUGIN = "solax"
 DEFAULT_READ_BATTERY = False
+DEFAULT_READ_BATTERY_EXTENDED = False
 ENERGY_DASHBOARD_DEVICE_ENABLED = True
 ENERGY_DASHBOARD_DEVICE_DISABLED = False
 DEFAULT_ENERGY_DASHBOARD_DEVICE = ENERGY_DASHBOARD_DEVICE_DISABLED
@@ -140,6 +142,38 @@ class PollOutcome(StrEnum):
 # ==================================== plugin base class ====================================================================
 
 
+@dataclass(kw_only=True)
+class battery_device_level:
+    """Additional battery device level, e.g. a tower controller or the DC/DC converters.
+
+    Templates use "{nr}" for the 1-based instance number. Devices of a level are only
+    created when the extended battery readout option is enabled.
+    """
+
+    key: str  # device identifier template
+    name: str  # device name template, appended to the hub name
+    sensor_key_prefix: str
+    sensor_types: list[Any]
+
+    def format(self, template: str, index: int) -> str:
+        return template.replace("{nr}", str(index + 1))
+
+    async def get_quantity(self, hub: Any) -> int:
+        return 0
+
+    async def select(self, hub: Any, index: int) -> bool:
+        """Select the instance before its registers are read; selection writes must be volatile (RAM)."""
+        return True
+
+    async def verify(self, hub: Any, index: int, new_data: dict[str, Any], key_prefix: str) -> bool:
+        """Confirm that the data just read belongs to the selected instance."""
+        return True
+
+    def get_device_details(self, new_data: dict[str, Any], key_prefix: str) -> dict[str, str]:
+        """Return device registry fields (serial_number, model, sw_version) found in the data."""
+        return {}
+
+
 @dataclass
 class base_battery_config:
     """Configuration for battery sensors."""
@@ -147,6 +181,10 @@ class base_battery_config:
     battery_sensor_type: list[SelectEntityDescription] | None = None
     battery_sensor_name_prefix: str | None = None
     battery_sensor_key_prefix: str | None = None
+
+    async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
+        """Return the additional device levels for the extended battery readout."""
+        return []
 
 
 @dataclass

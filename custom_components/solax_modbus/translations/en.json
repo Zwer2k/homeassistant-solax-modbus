@@ -41,7 +41,11 @@
       "battery": {
         "title": "Read out battery modules",
         "data": {
-          "read_battery": "Enable readout"
+          "read_battery": "Enable readout",
+          "read_battery_extended": "Read extended battery data (experimental)"
+        },
+        "data_description": {
+          "read_battery_extended": "Additional devices such as battery tower controller and DC/DC converters. Requires battery module readout; selects devices via volatile query registers."
         }
       },
       "core": {
@@ -125,7 +129,11 @@
       "battery": {
         "title": "Read out battery modules",
         "data": {
-          "read_battery": "Enable readout"
+          "read_battery": "Enable readout",
+          "read_battery_extended": "Read extended battery data (experimental)"
+        },
+        "data_description": {
+          "read_battery_extended": "Additional devices such as battery tower controller and DC/DC converters. Requires battery module readout; selects devices via volatile query registers."
         }
       },
       "core": {

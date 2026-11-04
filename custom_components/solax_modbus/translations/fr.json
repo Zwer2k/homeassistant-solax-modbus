@@ -47,7 +47,11 @@
       "battery": {
         "title": "Lecture des modules de batterie",
         "data": {
-          "read_battery": "Activer la lecture"
+          "read_battery": "Activer la lecture",
+          "read_battery_extended": "Lire les données étendues de la batterie (expérimental)"
+        },
+        "data_description": {
+          "read_battery_extended": "Appareils supplémentaires comme le contrôleur de tour et les convertisseurs DC/DC. Nécessite la lecture des modules de batterie."
         }
       }
     },
@@ -108,7 +112,11 @@
       "battery": {
         "title": "Lecture des modules de batterie",
         "data": {
-          "read_battery": "Activer la lecture"
+          "read_battery": "Activer la lecture",
+          "read_battery_extended": "Lire les données étendues de la batterie (expérimental)"
+        },
+        "data_description": {
+          "read_battery_extended": "Appareils supplémentaires comme le contrôleur de tour et les convertisseurs DC/DC. Nécessite la lecture des modules de batterie."
         }
       }
     },

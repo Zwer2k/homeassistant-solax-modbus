@@ -44,6 +44,7 @@ from .const import (
     CONF_MODBUS_ADDR,
     CONF_PLUGIN,
     CONF_READ_BATTERY,
+    CONF_READ_BATTERY_EXTENDED,
     CONF_READ_DATAHUB,
     CONF_READ_DCB,
     CONF_READ_EMS,
@@ -65,6 +66,7 @@ from .const import (
     DEFAULT_PLUGIN,
     DEFAULT_PORT,
     DEFAULT_READ_BATTERY,
+    DEFAULT_READ_BATTERY_EXTENDED,
     DEFAULT_READ_DATAHUB,
     DEFAULT_READ_DCB,
     DEFAULT_READ_EMS,
@@ -243,6 +245,7 @@ CORE_SCHEMA = vol.Schema(
 BATTERY_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_READ_BATTERY, default=DEFAULT_READ_BATTERY): bool,
+        vol.Optional(CONF_READ_BATTERY_EXTENDED, default=DEFAULT_READ_BATTERY_EXTENDED): bool,
     }
 )
 

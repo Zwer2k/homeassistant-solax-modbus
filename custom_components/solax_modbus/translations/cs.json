@@ -41,7 +41,11 @@
       "battery": {
         "title": "Čtení bateriových modulů",
         "data": {
-          "read_battery": "Povolit čtení"
+          "read_battery": "Povolit čtení",
+          "read_battery_extended": "Číst rozšířená data baterie (experimentální)"
+        },
+        "data_description": {
+          "read_battery_extended": "Další zařízení, jako je řadič věže a měniče DC/DC. Vyžaduje čtení bateriových modulů."
         }
       },
       "core": {
@@ -102,7 +106,11 @@
       "battery": {
         "title": "Čtení bateriových modulů",
         "data": {
-          "read_battery": "Povolit čtení"
+          "read_battery": "Povolit čtení",
+          "read_battery_extended": "Číst rozšířená data baterie (experimentální)"
+        },
+        "data_description": {
+          "read_battery_extended": "Další zařízení, jako je řadič věže a měniče DC/DC. Vyžaduje čtení bateriových modulů."
         }
       },
       "core": {

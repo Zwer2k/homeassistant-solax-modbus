@@ -41,7 +41,11 @@
       "battery": {
         "title": "Lettura dei moduli batteria",
         "data": {
-          "read_battery": "Abilita lettura"
+          "read_battery": "Abilita lettura",
+          "read_battery_extended": "Leggi dati estesi della batteria (sperimentale)"
+        },
+        "data_description": {
+          "read_battery_extended": "Dispositivi aggiuntivi come il controller della torre e i convertitori DC/DC. Richiede la lettura dei moduli batteria."
         }
       },
       "core": {
@@ -102,7 +106,11 @@
       "battery": {
         "title": "Lettura dei moduli batteria",
         "data": {
-          "read_battery": "Abilita lettura"
+          "read_battery": "Abilita lettura",
+          "read_battery_extended": "Leggi dati estesi della batteria (sperimentale)"
+        },
+        "data_description": {
+          "read_battery_extended": "Dispositivi aggiuntivi come il controller della torre e i convertitori DC/DC. Richiede la lettura dei moduli batteria."
         }
       },
       "core": {

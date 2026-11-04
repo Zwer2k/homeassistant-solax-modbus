@@ -47,7 +47,11 @@
       "battery": {
         "title": "Avläs batterimoduler",
         "data": {
-          "read_battery": "Aktivera avläsning"
+          "read_battery": "Aktivera avläsning",
+          "read_battery_extended": "Läs utökade batteridata (experimentell)"
+        },
+        "data_description": {
+          "read_battery_extended": "Ytterligare enheter som tornstyrenhet och DC/DC-omvandlare. Kräver avläsning av batterimoduler."
         }
       }
     },
@@ -108,7 +112,11 @@
       "battery": {
         "title": "Avläs batterimoduler",
         "data": {
-          "read_battery": "Aktivera avläsning"
+          "read_battery": "Aktivera avläsning",
+          "read_battery_extended": "Läs utökade batteridata (experimentell)"
+        },
+        "data_description": {
+          "read_battery_extended": "Ytterligare enheter som tornstyrenhet och DC/DC-omvandlare. Kräver avläsning av batterimoduler."
         }
       }
     },

@@ -47,7 +47,11 @@
       "battery": {
         "title": "Batteriemodule auslesen",
         "data": {
-          "read_battery": "Auslesen aktivieren"
+          "read_battery": "Auslesen aktivieren",
+          "read_battery_extended": "Erweiterte Speicherdaten auslesen (experimentell)"
+        },
+        "data_description": {
+          "read_battery_extended": "Zusätzliche Geräte wie Turmsteuerung (BDU) und DC/DC-Wandler. Setzt das Auslesen der Batteriemodule voraus; die Auswahl erfolgt über flüchtige Abfrageregister."
         }
       }
     },
@@ -108,7 +112,11 @@
       "battery": {
         "title": "Batteriemodule auslesen",
         "data": {
-          "read_battery": "Auslesen aktivieren"
+          "read_battery": "Auslesen aktivieren",
+          "read_battery_extended": "Erweiterte Speicherdaten auslesen (experimentell)"
+        },
+        "data_description": {
+          "read_battery_extended": "Zusätzliche Geräte wie Turmsteuerung (BDU) und DC/DC-Wandler. Setzt das Auslesen der Batteriemodule voraus; die Auswahl erfolgt über flüchtige Abfrageregister."
         }
       },
       "core": {

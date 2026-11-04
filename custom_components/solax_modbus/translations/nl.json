@@ -41,7 +41,11 @@
       "battery": {
         "title": "Uitlezen van batterij module(s)",
         "data": {
-          "read_battery": "Batterij uitlezen"
+          "read_battery": "Batterij uitlezen",
+          "read_battery_extended": "Uitgebreide batterijgegevens uitlezen (experimenteel)"
+        },
+        "data_description": {
+          "read_battery_extended": "Extra apparaten zoals de torencontroller en DC/DC-omvormers. Vereist het uitlezen van de batterijmodules."
         }
       },
       "core": {
@@ -102,7 +106,11 @@
       "battery": {
         "title": "Uitlezen van batterij module(s)",
         "data": {
-          "read_battery": "Batterij uitlezen"
+          "read_battery": "Batterij uitlezen",
+          "read_battery_extended": "Uitgebreide batterijgegevens uitlezen (experimenteel)"
+        },
+        "data_description": {
+          "read_battery_extended": "Extra apparaten zoals de torencontroller en DC/DC-omvormers. Vereist het uitlezen van de batterijmodules."
         }
       },
       "core": {
