@@ -3903,7 +3903,6 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="BMS Version",
         key="bms_version",
         native_unit_of_measurement=None,
-        state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         register=0x900B,
         allowedtypes=BAT_BTS,
@@ -3963,8 +3962,7 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Pack Time",
         key="pack_time",
         register=0x9045,
-        register_data_type=REGISTER_S32,
-        wordcount=1,
+        register_data_type=REGISTER_U32,
         scale=value_function_2byte_timestamp,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=BAT_BTS,
@@ -3973,10 +3971,10 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
     SofarModbusSensorEntityDescription(
         name="Pack Serial Number",
         key="pack_serial_number",
-        register=0x9048,
+        register=0x9047,
         newblock=True,
         register_data_type=REGISTER_STR,
-        wordcount=9,
+        wordcount=10,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=BAT_BTS,
     ),
@@ -4116,8 +4114,8 @@ class battery_config(base_battery_config):
     bapack_number_address = 0x900D
     bms_inquire_address = 0x9020
     bms_check_address = 0x9044
-    batt_pack_serial_address = 0x9048
-    batt_pack_serial_len = 9
+    batt_pack_serial_address = 0x9047
+    batt_pack_serial_len = 10
     batt_pack_model_address = 0x9007
     batt_pack_model_len = 4
 
@@ -4214,7 +4212,7 @@ class battery_config(base_battery_config):
                 return serial
             return None
         except Exception:
-            _LOGGER.warning("Cannot read batt pack serial")
+            _LOGGER.warning("Cannot read batt pack model")
             return None
 
     async def get_batt_pack_sw_version(self, hub: Any, new_data: dict[str, Any], key_prefix: str) -> str | None:
