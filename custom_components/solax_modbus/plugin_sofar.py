@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
@@ -45,6 +46,7 @@ from custom_components.solax_modbus.const import (
     BaseModbusSensorEntityDescription,
     UnitOfReactivePower,
     base_battery_config,
+    battery_device_level,
     plugin_base,
     value_function_2byte_timestamp,
     value_function_disabled_enabled,
@@ -4105,6 +4107,364 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 ]
 
 
+PCU_WARNING_TEXTS = {
+    (0, 1): "Charge soft start failure",
+    (0, 2): "Discharge soft start failure",
+    (0, 3): "Fan 1 failure",
+    (0, 4): "Fan 2 failure",
+    (0, 5): "Fan 3 failure",
+    (0, 6): "Fan 4 failure",
+    (0, 7): "PCU version inconsistency",
+    (0, 8): "Radiator 1 over-temperature",
+    (0, 9): "Ambient over-temperature",
+    (0, 10): "Radiator 2 over-temperature",
+    (0, 13): "Charge prohibited",
+    (0, 14): "Discharge prohibited",
+    (0, 15): "Battery unbalanced",
+    (1, 0): "Bus overvoltage",
+    (1, 1): "Bus undervoltage",
+    (1, 2): "Battery overvoltage",
+    (1, 3): "Battery undervoltage",
+}
+
+PCU_FAULT_TEXTS = {
+    (0, 0): "Radiator 1 over-temperature protection",
+    (0, 1): "Ambient over-temperature protection",
+    (0, 2): "SCI communication failure",
+    (0, 3): "CAN1 communication failure",
+    (0, 4): "Relay 1 failure",
+    (0, 5): "Radiator 2 over-temperature protection",
+    (0, 6): "CAN2 communication failure",
+    (0, 7): "Relay 2 failure",
+    (0, 8): "Bus software overvoltage",
+    (0, 9): "Bus software undervoltage",
+    (0, 10): "Battery software overvoltage",
+    (0, 11): "Battery software undervoltage",
+    (0, 12): "Battery software overcurrent",
+    (0, 13): "Flying capacitor 1 overvoltage",
+    (0, 14): "Flying capacitor 2 overvoltage",
+    (0, 15): "Hardware overcurrent",
+    (1, 0): "Permanent bus overvoltage",
+    (1, 1): "Permanent battery undervoltage",
+    (1, 2): "Permanent overcurrent",
+    (1, 3): "Permanent hardware overcurrent",
+    (1, 4): "Flying capacitor 3 overvoltage",
+    (1, 5): "Flying capacitor 4 overvoltage",
+    (1, 6): "Flying capacitor 1 undervoltage",
+    (1, 7): "Flying capacitor 2 undervoltage",
+    (1, 8): "Relay 1 permanent failure",
+    (1, 9): "Relay 2 permanent failure",
+    (1, 10): "Flying capacitor 3 undervoltage",
+    (1, 11): "Flying capacitor 4 undervoltage",
+    (1, 13): "Permanent bus short circuit",
+    (1, 14): "Permanent battery activation failure",
+    (1, 15): "Permanent bus reverse connection",
+    (2, 0): "Battery status error",
+    (2, 1): "PWM mode error",
+    (2, 2): "BMS version error",
+    (2, 3): "BMS overvoltage/overcurrent",
+    (2, 4): "Battery average overcurrent",
+    (2, 5): "Average overload",
+    (2, 6): "Bus software overcurrent",
+    (2, 7): "CBC overcurrent",
+    (2, 8): "Pack ID error",
+    (2, 9): "Start-up bus short circuit",
+    (2, 10): "Bus average undervoltage",
+    (2, 11): "Chip clock failure",
+    (2, 12): "Inverter CAN communication failure",
+    (2, 13): "Radiator low temperature",
+    (2, 14): "Ambient low temperature",
+    (2, 15): "Sampling offset calibration fault",
+}
+
+BDU_FAULT_TEXTS = {
+    (0, 0): "Battery reverse connection",
+    (0, 1): "Fuse fault",
+}
+
+
+def value_function_bit_texts(texts: dict[tuple[int, int], str]) -> Callable[[Any, Any, dict[str, Any]], str]:
+    """Translate the set bits of one or more status words into a readable list."""
+
+    def decode(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+        words = initval if isinstance(initval, list) else [initval]
+        active = [
+            texts.get((word_nr, bit), f"Unknown {word_nr + 1}.{bit}") for word_nr, word in enumerate(words) for bit in range(16) if word >> bit & 1
+        ]
+        return ", ".join(active)[:255] if active else "None"
+
+    return decode
+
+
+def value_function_pcu_version(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    """Decode "V" followed by three binary digits, e.g. 0x5601 0x0021 -> V01.00.33."""
+    high, low = initval
+    return f"{chr(high >> 8)}{high & 0xFF:02d}.{low >> 8:02d}.{low & 0xFF:02d}"
+
+
+def value_function_bdu_version(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    """Decode stage character and three ASCII digit pairs, e.g. V01.00.10."""
+    stage, *parts = initval
+    return chr(stage & 0xFF) + ".".join(part.to_bytes(2, "big").decode("ascii", errors="ignore") for part in parts)
+
+
+def value_function_hardware_version(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
+    return f"{initval >> 8}.{initval & 0xFF}"
+
+
+BDU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        key="id",
+        register=0x6090,
+        newblock=True,
+        internal=True,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Serial Number",
+        key="serial_number",
+        register=0x6091,
+        register_data_type=REGISTER_STR,
+        wordcount=10,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Software Version",
+        key="software_version",
+        register=0x609B,
+        register_data_type=REGISTER_WORDS,
+        wordcount=4,
+        scale=value_function_bdu_version,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Fault",
+        key="fault",
+        register=0x609F,
+        scale=value_function_bit_texts(BDU_FAULT_TEXTS),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:alert-circle-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Battery Modules",
+        key="battery_modules",
+        register=0x60A0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:battery-unknown",
+    ),
+]
+
+PCU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        key="id",
+        register=0x6010,
+        newblock=True,
+        internal=True,
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Serial Number",
+        key="serial_number",
+        register=0x6011,
+        register_data_type=REGISTER_STR,
+        wordcount=10,
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Software Version",
+        key="software_version",
+        register=0x601B,
+        register_data_type=REGISTER_WORDS,
+        wordcount=2,
+        scale=value_function_pcu_version,
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Hardware Version",
+        key="hardware_version",
+        register=0x601D,
+        scale=value_function_hardware_version,
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="State",
+        key="state",
+        register=0x6020,
+        scale={
+            0: "Update",
+            1: "Check",
+            2: "Normal",
+            3: "Active",
+            4: "Fault",
+            5: "Permanent Fault",
+        },
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+        icon="mdi:state-machine",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Internal Temperature",
+        key="internal_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        register=0x6021,
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Radiator Temperature",
+        key="radiator_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        register=0x6022,
+        register_data_type=REGISTER_S16,
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Warning",
+        key="warning",
+        register=0x6024,
+        register_data_type=REGISTER_WORDS,
+        wordcount=4,
+        scale=value_function_bit_texts(PCU_WARNING_TEXTS),
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:alert-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Fault",
+        key="fault",
+        register=0x6028,
+        register_data_type=REGISTER_WORDS,
+        wordcount=4,
+        scale=value_function_bit_texts(PCU_FAULT_TEXTS),
+        scan_group=SCAN_GROUP_MEDIUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:alert-circle-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="High Side Voltage",
+        key="high_side_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        register=0x602C,
+        scale=0.1,
+        rounding=1,
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Low Side Voltage",
+        key="low_side_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        register=0x602D,
+        scale=0.1,
+        rounding=1,
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Low Side Current",
+        key="low_side_current",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        device_class=SensorDeviceClass.CURRENT,
+        register=0x602E,
+        register_data_type=REGISTER_S16,
+        scale=0.1,
+        rounding=1,
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Power",
+        key="power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        register=0x602F,
+        register_data_type=REGISTER_S16,
+        scale=10,
+        scan_group=SCAN_GROUP_MEDIUM,
+        allowedtypes=BAT_BTS,
+    ),
+]
+
+
+@dataclass(kw_only=True)
+class sofar_selectable_level(battery_device_level):
+    """BTS device level read through a volatile query register and its ID readback."""
+
+    count_address: int
+    inquire_address: int
+    id_address: int
+    probe_first_instance: bool = False  # BDU_Number reads 0 after an inverter restart although the BDU answers
+
+    async def _read_u16(self, hub: Any, address: int) -> int | None:
+        try:
+            response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=1)
+        except Exception:
+            _LOGGER.warning("Cannot read register 0x%x", address, exc_info=True)
+            return None
+        if response is None or response.isError():
+            return None
+        return int(response.registers[0])
+
+    async def get_quantity(self, hub: Any) -> int:
+        quantity = await self._read_u16(hub, self.count_address) or 0
+        if quantity == 0 and self.probe_first_instance and await self.select(hub, 0):
+            response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.id_address + 1, count=10)
+            if response is not None and not response.isError() and any(response.registers):
+                quantity = 1
+        return quantity
+
+    async def select(self, hub: Any, index: int) -> bool:
+        instance = index + 1
+        if await self._read_u16(hub, self.id_address) == instance:
+            return True
+        try:
+            await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.inquire_address, payload=instance)
+        except Exception:
+            _LOGGER.warning("Cannot select %s %s via register 0x%x", self.key, instance, self.inquire_address, exc_info=True)
+            return False
+        for _attempt in range(5):
+            await asyncio.sleep(0.2)
+            if await self._read_u16(hub, self.id_address) == instance:
+                return True
+        _LOGGER.warning("Inverter did not select %s %s", self.key, instance)
+        return False
+
+    async def verify(self, hub: Any, index: int, new_data: dict[str, Any], key_prefix: str) -> bool:
+        # The inverter accepts query values without a matching device and then returns zeros.
+        if new_data.get(key_prefix + "id") != index + 1 or not new_data.get(key_prefix + "serial_number"):
+            _LOGGER.warning("Validation failed for %s %s: unexpected ID or missing serial number", self.key, index + 1)
+            return False
+        return True
+
+    def get_device_details(self, new_data: dict[str, Any], key_prefix: str) -> dict[str, str]:
+        details = {
+            "serial_number": new_data.get(key_prefix + "serial_number"),
+            "sw_version": new_data.get(key_prefix + "software_version"),
+            "hw_version": new_data.get(key_prefix + "hardware_version"),
+        }
+        return {field: value for field, value in details.items() if value}
+
+
 @dataclass(kw_only=True)
 class battery_config(base_battery_config):
     battery_sensor_type: list[SofarModbusSensorEntityDescription] | None = field(default_factory=lambda: BATTERY_SENSOR_TYPES)  # type: ignore[assignment]  # Covariant list typing
@@ -4124,6 +4484,31 @@ class battery_config(base_battery_config):
     batt_pack_serials: dict[int, dict[int, str]] = field(default_factory=dict)
     selected_batt_nr: int | None = None
     selected_batt_pack_nr: int | None = None
+
+    async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
+        if not hub._invertertype & BAT_BTS:
+            return []
+        return [
+            sofar_selectable_level(
+                key="battery_bdu_{nr}",
+                name="BDU {nr}",
+                sensor_key_prefix="battery_bdu_{nr}_",
+                sensor_types=BDU_SENSOR_TYPES,
+                count_address=0x6084,
+                inquire_address=0x60C4,
+                id_address=0x6090,
+                probe_first_instance=True,
+            ),
+            sofar_selectable_level(
+                key="battery_pcu_{nr}",
+                name="PCU {nr}",
+                sensor_key_prefix="battery_pcu_{nr}_",
+                sensor_types=PCU_SENSOR_TYPES,
+                count_address=0x6004,
+                inquire_address=0x6044,
+                id_address=0x6010,
+            ),
+        ]
 
     async def init_batt_pack(self, hub: Any, serial_number: str) -> None:
         assert self.selected_batt_nr is not None
