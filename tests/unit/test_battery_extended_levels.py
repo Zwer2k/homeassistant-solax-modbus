@@ -46,9 +46,20 @@ class FakeLevel(battery_device_level):
 @dataclass
 class FakeBatteryConfig(base_battery_config):
     levels: list[battery_device_level] = field(default_factory=list)
+    pack_quantity: int = 0
+    extended_pack_sensor_types: list[Any] = field(default_factory=list)
 
     async def get_batt_pack_quantity(self, hub: Any) -> int:
-        return 0
+        return self.pack_quantity
+
+    async def select_battery(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> bool:
+        return True
+
+    async def get_batt_pack_serial(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> str:
+        return "PACK-SN"
+
+    def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
+        return self.extended_pack_sensor_types
 
     async def get_batt_quantity(self, hub: Any) -> int:
         return 1
@@ -173,3 +184,27 @@ async def test_extended_level_follow_up_updates_changed_device_details(
         assert await read_follow_up({}, {"battery_tower_1_serial_number": "SN-1"}) is valid
 
     assert registry.async_update_device.call_args_list == expected_updates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extended", "expected_sensors"),
+    [
+        pytest.param(False, ["base"], id="extended-disabled"),
+        pytest.param(True, ["base", "extended"], id="extended-enabled"),
+    ],
+)
+async def test_extended_pack_sensors_require_option(monkeypatch: pytest.MonkeyPatch, extended: bool, expected_sensors: list[str]) -> None:
+    """Additional pack sensors join the existing pack device only with the opt-in."""
+    config = FakeBatteryConfig(
+        battery_sensor_type=cast(Any, ["base"]),
+        battery_sensor_key_prefix="battery_{batt-nr}_{pack-nr}_",
+        pack_quantity=1,
+        extended_pack_sensor_types=["extended"],
+    )
+    entity_to_list, _, _ = _setup(monkeypatch, config)
+
+    await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: extended})
+
+    pack_call = next(entity_call for entity_call in entity_to_list.call_args_list if entity_call.args[8] == "battery_1_1_")
+    assert pack_call.args[6] == expected_sensors

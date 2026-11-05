@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.solax_modbus.plugin_sofar import (
     BAT_BTS,
+    BATTERY_EXTENDED_SENSOR_TYPES,
     BDU_FAULT_TEXTS,
     HYBRID,
     PCU_FAULT_TEXTS,
@@ -16,6 +17,7 @@ from custom_components.solax_modbus.plugin_sofar import (
     battery_config,
     sofar_selectable_level,
     value_function_bdu_version,
+    value_function_bit_count,
     value_function_bit_texts,
     value_function_hardware_version,
     value_function_pcu_version,
@@ -81,7 +83,8 @@ def test_hardware_version() -> None:
     [
         pytest.param(PCU_WARNING_TEXTS, [0, 0, 0, 0], "None", id="no-bits"),
         pytest.param(PCU_WARNING_TEXTS, [0x4000, 0x0001, 0, 0], "Discharge prohibited, Bus overvoltage", id="multiple-words"),
-        pytest.param(PCU_FAULT_TEXTS, [0, 0, 0, 0x0001], "Unknown 4.0", id="undocumented-bit"),
+        pytest.param(PCU_FAULT_TEXTS, [0, 0, 0, 0x0001], "Unknown bit 4.0", id="undocumented-bit"),
+        pytest.param({}, 0x0009, "Unknown bit 0, Unknown bit 3", id="undocumented-single-register"),
         pytest.param(BDU_FAULT_TEXTS, 0x0002, "Fuse fault", id="single-register"),
     ],
 )
@@ -158,3 +161,20 @@ async def test_device_details_skip_missing_values() -> None:
         "serial_number": "SQ200402K5C233061682",
         "sw_version": "V01.00.33",
     }
+
+
+def test_balancing_cells_counts_active_bits() -> None:
+    assert value_function_bit_count(0b1000_0000_0000_0101, None, {}) == 3
+
+
+@pytest.mark.parametrize(
+    ("invertertype", "expected"),
+    [
+        pytest.param(HYBRID | X3 | BAT_BTS, BATTERY_EXTENDED_SENSOR_TYPES, id="bts"),
+        pytest.param(HYBRID | X3, [], id="without-bts"),
+    ],
+)
+def test_extended_pack_sensors_only_for_bts(invertertype: int, expected: list[Any]) -> None:
+    hub = SimpleNamespace(_invertertype=invertertype)
+
+    assert battery_config().get_extended_pack_sensor_types(hub) == expected

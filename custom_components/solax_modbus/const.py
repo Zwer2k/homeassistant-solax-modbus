@@ -186,6 +186,10 @@ class base_battery_config:
         """Return the additional device levels for the extended battery readout."""
         return []
 
+    def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
+        """Return additional pack sensors for the extended battery readout."""
+        return []
+
 
 @dataclass
 class plugin_base:

@@ -216,8 +216,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Energy Dashboard check moved to after rebuild_blocks (see below) so initial_groups are ready for reading
 
     readBattery = entry.options.get(CONF_READ_BATTERY, False)
+    readBatteryExtended = entry.options.get(CONF_READ_BATTERY_EXTENDED, False)
     if readBattery and plugin.BATTERY_CONFIG is not None:
         battery_config = plugin.BATTERY_CONFIG
+        pack_sensor_types = list(battery_config.battery_sensor_type or [])
+        if readBatteryExtended:
+            pack_sensor_types += battery_config.get_extended_pack_sensor_types(hub)
         batt_pack_quantity = await battery_config.get_batt_pack_quantity(hub)
         batt_quantity = await battery_config.get_batt_quantity(hub)
         _LOGGER.info("batt_pack_quantity: %s, batt_quantity: %s", batt_pack_quantity, batt_quantity)
@@ -312,14 +316,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     initial_groups,
                     computedRegs,
                     device_info_battery,
-                    battery_config.battery_sensor_type,
+                    pack_sensor_types,
                     "",  # entity names never carry the pack prefix — the battery device name provides it
                     key_prefix,
                     readPreparation,
                     readFollowUpBattery,
                 )
 
-        if entry.options.get(CONF_READ_BATTERY_EXTENDED, False):
+        if readBatteryExtended:
             await _add_extended_battery_entities(hass, entry, hub, hub_name, entities, initial_groups, computedRegs, battery_config)
 
     hub.computedSensors = computedRegs
@@ -983,7 +987,7 @@ async def _add_extended_battery_entities(
     dev_registry = dr.async_get(hass)
     for level in await battery_config.async_get_extended_levels(hub):
         quantity = await level.get_quantity(hub)
-        _LOGGER.info("%s: extended battery level %s: %s instance(s)", hub_name, level.key, quantity)
+        _LOGGER.info("%s: extended battery level %s: %s instance(s)", hub_name, level.name.replace("{nr}", "").strip(), quantity)
         for index in range(quantity):
             device_ident = level.format(level.key, index)
             key_prefix = level.format(level.sensor_key_prefix, index)

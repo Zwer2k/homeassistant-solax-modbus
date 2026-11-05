@@ -4189,7 +4189,10 @@ def value_function_bit_texts(texts: dict[tuple[int, int], str]) -> Callable[[Any
     def decode(initval: Any, descr: Any, datadict: dict[str, Any]) -> str:
         words = initval if isinstance(initval, list) else [initval]
         active = [
-            texts.get((word_nr, bit), f"Unknown {word_nr + 1}.{bit}") for word_nr, word in enumerate(words) for bit in range(16) if word >> bit & 1
+            texts.get((word_nr, bit), f"Unknown bit {word_nr + 1}.{bit}" if len(words) > 1 else f"Unknown bit {bit}")
+            for word_nr, word in enumerate(words)
+            for bit in range(16)
+            if word >> bit & 1
         ]
         return ", ".join(active)[:255] if active else "None"
 
@@ -4406,6 +4409,52 @@ PCU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 ]
 
 
+def value_function_bit_count(initval: Any, descr: Any, datadict: dict[str, Any]) -> int:
+    return int(initval).bit_count()
+
+
+# Bit meanings of the pack alarm/protection/fault words are not documented by SOFAR.
+BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        name="Balancing Cells",
+        key="balancing_cells",
+        register=0x9075,
+        scale=value_function_bit_count,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:scale-balance",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Alarm",
+        key="pack_alarm",
+        register=0x9076,
+        scale=value_function_bit_texts({}),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:alert-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Protection",
+        key="pack_protection",
+        register=0x9077,
+        scale=value_function_bit_texts({}),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:shield-alert-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Fault",
+        key="pack_fault",
+        register=0x9078,
+        scale=value_function_bit_texts({}),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+        icon="mdi:alert-circle-outline",
+    ),
+]
+
+
 @dataclass(kw_only=True)
 class sofar_selectable_level(battery_device_level):
     """BTS device level read through a volatile query register and its ID readback."""
@@ -4484,6 +4533,9 @@ class battery_config(base_battery_config):
     batt_pack_serials: dict[int, dict[int, str]] = field(default_factory=dict)
     selected_batt_nr: int | None = None
     selected_batt_pack_nr: int | None = None
+
+    def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
+        return BATTERY_EXTENDED_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
 
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
         if not hub._invertertype & BAT_BTS:
