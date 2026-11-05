@@ -528,6 +528,16 @@ async def async_cleanup_disabled_devices(hass: HomeAssistant, entry: ConfigEntry
             dev_registry.async_remove_device(device_entry.id)
 
 
+async def async_remove_config_entry_device(hass: HomeAssistant, entry: ConfigEntry, device_entry: dr.DeviceEntry) -> bool:
+    """Allow deleting a device from the UI once the integration no longer provides it."""
+    entity_registry = er.async_get(hass)
+    for entity in er.async_entries_for_device(entity_registry, device_entry.id, include_disabled_entities=True):
+        state = hass.states.get(entity.entity_id)
+        if state is not None and not state.attributes.get("restored"):
+            return False
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload SolaX modbus entry and tear down transports cleanly."""
     name = entry.options.get("name")

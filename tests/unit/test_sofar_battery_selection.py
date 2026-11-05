@@ -55,6 +55,27 @@ async def test_select_battery_writes_and_verifies_changed_selection(monkeypatch:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("readbacks", "expected", "expected_writes"),
+    [
+        pytest.param([0, 0x0200, 0x0200, 0x0200, 0x0100], True, 2, id="overwritten-by-other-client"),
+        pytest.param([0] + [0x0200] * 9, False, 3, id="never-selected"),
+    ],
+)
+async def test_select_battery_writes_again_while_selection_differs(
+    monkeypatch: pytest.MonkeyPatch, readbacks: list[int], expected: bool, expected_writes: int
+) -> None:
+    """Another Modbus client switching 0x9020 must not drop a pack from setup."""
+    config = battery_config()
+    hub = make_hub(*readbacks)
+    monkeypatch.setattr("custom_components.solax_modbus.plugin_sofar.asyncio.sleep", AsyncMock())
+
+    assert await config.select_battery(hub, batt_nr=0, batt_pack_nr=1) is expected
+
+    assert hub.async_write_registers_single.await_count == expected_writes
+
+
+@pytest.mark.asyncio
 async def test_select_battery_contains_rejected_write() -> None:
     """A rejected pack-selection write must not abort platform setup."""
     config = battery_config()

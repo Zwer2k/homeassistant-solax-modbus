@@ -4526,6 +4526,7 @@ class battery_config(base_battery_config):
     batt_pack_serial_len = 10
     batt_pack_model_address = 0x9007
     batt_pack_model_len = 4
+    select_attempts = 3
 
     number_cels_in_parallel: int | None = None  # number of battery pack cells in parallel
     number_strings: int | None = None  # number of strings of all battery packs
@@ -4618,26 +4619,28 @@ class battery_config(base_battery_config):
             self.selected_batt_pack_nr = batt_pack_nr
             return True
 
-        try:
-            await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
-        except Exception:
-            _LOGGER.warning(
-                "Cannot select batt_nr: %s, batt_pack_nr: %s via register 0x%x",
-                batt_nr,
-                batt_pack_nr,
-                self.bms_inquire_address,
-                exc_info=True,
-            )
-            return False
+        # Another Modbus client may switch the selection concurrently, so write again before giving up.
+        for _write in range(self.select_attempts):
+            try:
+                await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.bms_inquire_address, payload=payload)
+            except Exception:
+                _LOGGER.warning(
+                    "Cannot select batt_nr: %s, batt_pack_nr: %s via register 0x%x",
+                    batt_nr,
+                    batt_pack_nr,
+                    self.bms_inquire_address,
+                    exc_info=True,
+                )
+                return False
+            for _check in range(3):
+                await asyncio.sleep(0.3)
+                if await self._read_selected_battery(hub) == payload:
+                    self.selected_batt_nr = batt_nr
+                    self.selected_batt_pack_nr = batt_pack_nr
+                    return True
 
-        await asyncio.sleep(0.3)
-        if await self._read_selected_battery(hub) != payload:
-            _LOGGER.warning("Inverter did not select batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
-            return False
-
-        self.selected_batt_nr = batt_nr
-        self.selected_batt_pack_nr = batt_pack_nr
-        return True
+        _LOGGER.warning("Inverter did not select batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
+        return False
 
     async def get_batt_pack_serial(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> str | None:
         if not self.batt_pack_serials.__contains__(batt_nr):
