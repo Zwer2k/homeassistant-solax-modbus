@@ -247,3 +247,16 @@ async def test_pack_parent_from_battery_config(monkeypatch: pytest.MonkeyPatch, 
     await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: extended})
 
     assert [link_call.args[2] for link_call in link_parent.call_args_list] == [(DOMAIN, HUB_NAME, expected_parent)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extended", [False, True], ids=["extended-disabled", "extended-enabled"])
+async def test_base_battery_config_creates_no_devices(monkeypatch: pytest.MonkeyPatch, extended: bool) -> None:
+    """A plugin that sets BATTERY_CONFIG without overriding the pack methods gets no battery devices."""
+    config = base_battery_config(battery_sensor_key_prefix="battery_{batt-nr}_{pack-nr}_")
+    entity_to_list, _, link_parent = _setup(monkeypatch, config)
+
+    await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: extended})
+
+    assert _level_calls(entity_to_list) == []
+    link_parent.assert_not_called()

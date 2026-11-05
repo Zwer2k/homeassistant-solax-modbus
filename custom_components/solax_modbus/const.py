@@ -179,11 +179,54 @@ class battery_device_level:
 
 @dataclass
 class base_battery_config:
-    """Configuration for battery sensors."""
+    """Configuration for battery pack devices behind a selection register.
+
+    A plugin enables the readout by setting BATTERY_CONFIG and overriding the pack
+    methods below. Packs are addressed as battery (string/tower) and pack number,
+    both 0-based; a pack device is created only once its serial number is known.
+    The defaults create no pack devices.
+    """
 
     battery_sensor_type: list[SelectEntityDescription] | None = None
     battery_sensor_name_prefix: str | None = None
-    battery_sensor_key_prefix: str | None = None
+    battery_sensor_key_prefix: str | None = None  # supports "{batt-nr}" and "{pack-nr}"
+
+    async def get_batt_quantity(self, hub: Any) -> int | None:
+        """Return the number of batteries (strings/towers); None is treated as 1."""
+        return None
+
+    async def get_batt_pack_quantity(self, hub: Any) -> int | None:
+        """Return the number of packs per battery."""
+        return 0
+
+    async def select_battery(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> bool:
+        """Select the pack whose registers are read next; selection writes must be volatile (RAM)."""
+        return True
+
+    async def init_batt_pack(self, hub: Any, serial_number: str) -> None:
+        """Seed the selected pack's serial number from the device registry."""
+
+    async def init_batt_pack_serials(self, hub: Any) -> None:
+        """Read the serial numbers of all packs from the device."""
+
+    async def get_batt_pack_serial(self, hub: Any, batt_nr: int, batt_pack_nr: int) -> str | None:
+        return None
+
+    async def get_batt_pack_model(self, hub: Any) -> str | None:
+        return None
+
+    async def get_batt_pack_sw_version(self, hub: Any, new_data: dict[str, Any], key_prefix: str) -> str | None:
+        return None
+
+    async def check_battery_on_start(self, hub: Any, old_data: dict[str, Any], key_prefix: str, batt_nr: int, batt_pack_nr: int) -> bool:
+        """Confirm the selection before a pack is read; False skips this poll."""
+        return True
+
+    async def check_battery_on_end(
+        self, hub: Any, old_data: dict[str, Any], new_data: dict[str, Any], key_prefix: str, batt_nr: int, batt_pack_nr: int
+    ) -> bool:
+        """Confirm the data read belongs to the selected pack; False discards it."""
+        return True
 
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
         """Discover the additional device levels for the extended battery readout.

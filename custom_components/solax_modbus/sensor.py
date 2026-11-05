@@ -231,7 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.info("batt_pack_quantity: %s, batt_quantity: %s", batt_pack_quantity, batt_quantity)
 
         for batt_nr in range(0, batt_quantity or 1, 1):
-            for batt_pack_nr in range(0, batt_pack_quantity, 1):
+            for batt_pack_nr in range(0, batt_pack_quantity or 0, 1):
                 if not await battery_config.select_battery(hub, batt_nr, batt_pack_nr):
                     _LOGGER.warning("cannot select batt_nr: %s, batt_pack_nr: %s", batt_nr, batt_pack_nr)
                     continue
