@@ -1085,7 +1085,24 @@ def entityToList(
 
                 if isinstance(newdescr.key, str):
                     newdescr = replace(newdescr, key=key_prefix + newdescr.key)
+                if key_prefix:
+                    newdescr = _prefix_local_dependencies(newdescr, key_prefix, {str(descr.key) for descr in sensor_types})
                 entityToListSingle(hub, hub_name, entities, groups, computedRegs, device_info, newdescr, readPreparation, readFollowUp)
+
+
+def _prefix_local_dependencies(descr: Any, key_prefix: str, local_keys: set[str]) -> Any:
+    """Point dependencies on sensors of the same prefixed device (e.g. a battery pack) at their prefixed keys."""
+
+    def prefixed(dependency: str) -> str:
+        return key_prefix + dependency if dependency in local_keys else dependency
+
+    changes: dict[str, Any] = {}
+    for field in ("depends_on", "optional_depends_on"):
+        if dependencies := getattr(descr, field, None):
+            changes[field] = [prefixed(dependency) for dependency in dependencies]
+    if alternatives := getattr(descr, "depends_on_any", None):
+        changes["depends_on_any"] = [tuple(prefixed(dependency) for dependency in group) for group in alternatives]
+    return replace(descr, **changes) if changes else descr
 
 
 def entityToListSingle(

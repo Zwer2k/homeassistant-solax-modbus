@@ -4414,8 +4414,53 @@ def value_function_bit_count(initval: Any, descr: Any, datadict: dict[str, Any])
     return int(initval).bit_count()
 
 
+def value_function_difference(initval: Any, descr: Any, datadict: dict[str, Any]) -> float:
+    minuend, subtrahend = descr.depends_on
+    return round(float(datadict[minuend]) - float(datadict[subtrahend]), 3)
+
+
+def value_function_capacity_energy(initval: Any, descr: Any, datadict: dict[str, Any]) -> float:
+    """Estimate kWh from a capacity in Ah and the current module voltage."""
+    capacity, voltage = descr.depends_on
+    return round(float(datadict[capacity]) * float(datadict[voltage]) / 1000, 2)
+
+
 # Bit meanings of the pack alarm/protection/fault words are not documented by SOFAR.
 BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        name="Cell Voltage Difference",
+        key="cell_voltage_difference",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_unit_of_measurement=UnitOfElectricPotential.MILLIVOLT,
+        suggested_display_precision=0,
+        value_function=value_function_difference,
+        depends_on=["cell_max_voltage", "cell_min_voltage"],
+        allowedtypes=BAT_BTS,
+        icon="mdi:sigma",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Remaining Energy",
+        key="remaining_energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_capacity_energy,
+        depends_on=["pack_remaining_capacity", "total_voltage"],
+        allowedtypes=BAT_BTS,
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Full Charge Energy",
+        key="full_charge_energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_capacity_energy,
+        depends_on=["pack_full_charge_capacity", "total_voltage"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        allowedtypes=BAT_BTS,
+    ),
     SofarModbusSensorEntityDescription(
         name="Balancing Cells",
         key="balancing_cells",
