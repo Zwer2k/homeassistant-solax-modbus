@@ -16,7 +16,9 @@ from custom_components.solax_modbus.const import (
     CONF_READ_BATTERY,
     CONF_READ_BATTERY_EXTENDED,
     DOMAIN,
+    INVERTER_IDENT,
     base_battery_config,
+    battery_device_instance,
     battery_device_level,
 )
 
@@ -25,18 +27,14 @@ HUB_NAME = "Sofar"
 
 @dataclass(kw_only=True)
 class FakeLevel(battery_device_level):
-    quantity: int = 2
     selected: list[int] = field(default_factory=list)
     valid: bool = True
 
-    async def get_quantity(self, hub: Any) -> int:
-        return self.quantity
-
-    async def select(self, hub: Any, index: int) -> bool:
-        self.selected.append(index)
+    async def select(self, hub: Any, instance: battery_device_instance) -> bool:
+        self.selected.append(instance.number)
         return True
 
-    async def verify(self, hub: Any, index: int, new_data: dict[str, Any], key_prefix: str) -> bool:
+    async def verify(self, hub: Any, instance: battery_device_instance, new_data: dict[str, Any]) -> bool:
         return self.valid
 
     def get_device_details(self, new_data: dict[str, Any], key_prefix: str) -> dict[str, str]:
@@ -48,6 +46,7 @@ class FakeBatteryConfig(base_battery_config):
     levels: list[battery_device_level] = field(default_factory=list)
     pack_quantity: int = 0
     extended_pack_sensor_types: list[Any] = field(default_factory=list)
+    pack_parent_key: str | None = None
 
     async def get_batt_pack_quantity(self, hub: Any) -> int:
         return self.pack_quantity
@@ -67,12 +66,28 @@ class FakeBatteryConfig(base_battery_config):
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
         return self.levels
 
+    def get_pack_parent_key(self, batt_nr: int) -> str | None:
+        return self.pack_parent_key
+
 
 def _level() -> FakeLevel:
-    return FakeLevel(key="battery_tower_{nr}", name="Battery Tower {nr}", sensor_key_prefix="battery_tower_{nr}_", sensor_types=[])
+    return FakeLevel(
+        name="Tower",
+        sensor_types=[],
+        instances=[
+            battery_device_instance(key="battery_tower_1", name="Battery Tower 1", key_prefix="battery_tower_1_", number=1),
+            battery_device_instance(
+                key="battery_tower_1_unit_2",
+                name="Battery Tower 1 Unit 2",
+                key_prefix="battery_tower_1_unit_2_",
+                number=2,
+                parent_key="battery_tower_1",
+            ),
+        ],
+    )
 
 
-def _setup(monkeypatch: pytest.MonkeyPatch, config: base_battery_config) -> tuple[Mock, SimpleNamespace, dict[str, SimpleNamespace]]:
+def _setup(monkeypatch: pytest.MonkeyPatch, config: base_battery_config) -> tuple[Mock, SimpleNamespace, Mock]:
     devices = {"battery_tower_1": SimpleNamespace(id="tower-1", serial_number="SN-1", sw_version=None)}
 
     def update_device(device_id: str, **changes: Any) -> None:
@@ -89,7 +104,9 @@ def _setup(monkeypatch: pytest.MonkeyPatch, config: base_battery_config) -> tupl
     entity_to_list = Mock()
     monkeypatch.setattr(sensor, "entityToList", entity_to_list)
     monkeypatch.setattr(sensor, "entityToListSingle", Mock())
-    return entity_to_list, registry, devices
+    link_parent = Mock()
+    monkeypatch.setattr(sensor, "link_parent_device", link_parent)
+    return entity_to_list, registry, link_parent
 
 
 def _level_calls(entity_to_list: Mock) -> list[Any]:
@@ -142,7 +159,7 @@ async def test_extended_levels_create_one_device_per_instance(monkeypatch: pytes
     """Each level instance gets its own device, key prefix and selection callback."""
     level = _level()
     config = FakeBatteryConfig(levels=[level])
-    entity_to_list, _, _ = _setup(monkeypatch, config)
+    entity_to_list, _, link_parent = _setup(monkeypatch, config)
 
     await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: True})
 
@@ -150,14 +167,18 @@ async def test_extended_levels_create_one_device_per_instance(monkeypatch: pytes
     device_infos = [level_call.args[5] for level_call in level_calls]
     assert [info["identifiers"] for info in device_infos] == [
         {(DOMAIN, HUB_NAME, "battery_tower_1")},
-        {(DOMAIN, HUB_NAME, "battery_tower_2")},
+        {(DOMAIN, HUB_NAME, "battery_tower_1_unit_2")},
     ]
-    assert [info["name"] for info in device_infos] == ["Sofar Battery Tower 1", "Sofar Battery Tower 2"]
-    assert [level_call.args[8] for level_call in level_calls] == ["battery_tower_1_", "battery_tower_2_"]
+    assert [info["name"] for info in device_infos] == ["Sofar Battery Tower 1", "Sofar Battery Tower 1 Unit 2"]
+    assert [level_call.args[8] for level_call in level_calls] == ["battery_tower_1_", "battery_tower_1_unit_2_"]
+    assert [link_call.args[2] for link_call in link_parent.call_args_list] == [
+        (DOMAIN, HUB_NAME, INVERTER_IDENT),
+        (DOMAIN, HUB_NAME, "battery_tower_1"),
+    ]
 
     read_preparation = level_calls[1].args[9]
     assert await read_preparation({}) is True
-    assert level.selected == [1]
+    assert level.selected == [2]
 
 
 @pytest.mark.asyncio
@@ -208,3 +229,21 @@ async def test_extended_pack_sensors_require_option(monkeypatch: pytest.MonkeyPa
 
     pack_call = next(entity_call for entity_call in entity_to_list.call_args_list if entity_call.args[8] == "battery_1_1_")
     assert pack_call.args[6] == expected_sensors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extended", "expected_parent"),
+    [
+        pytest.param(False, INVERTER_IDENT, id="extended-disabled"),
+        pytest.param(True, "battery_1", id="extended-enabled"),
+    ],
+)
+async def test_pack_parent_from_battery_config(monkeypatch: pytest.MonkeyPatch, extended: bool, expected_parent: str) -> None:
+    """Packs move below their tower device only with the opt-in."""
+    config = FakeBatteryConfig(battery_sensor_key_prefix="battery_{batt-nr}_{pack-nr}_", pack_quantity=1, pack_parent_key="battery_1")
+    _, _, link_parent = _setup(monkeypatch, config)
+
+    await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: extended})
+
+    assert [link_call.args[2] for link_call in link_parent.call_args_list] == [(DOMAIN, HUB_NAME, expected_parent)]

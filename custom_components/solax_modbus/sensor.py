@@ -31,6 +31,7 @@ from .const import (
     SLEEPMODE_ZERO,
     BaseModbusSensorEntityDescription,
     base_battery_config,
+    battery_device_instance,
     battery_device_level,
     is_inputless_computed_sensor,
     matches_modbus_protocol,
@@ -222,6 +223,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         pack_sensor_types = list(battery_config.battery_sensor_type or [])
         if readBatteryExtended:
             pack_sensor_types += battery_config.get_extended_pack_sensor_types(hub)
+        if readBatteryExtended:
+            # Parents first, so their devices exist when the pack devices link to them.
+            await _add_extended_battery_entities(hass, entry, hub, hub_name, entities, initial_groups, computedRegs, battery_config)
         batt_pack_quantity = await battery_config.get_batt_pack_quantity(hub)
         batt_quantity = await battery_config.get_batt_quantity(hub)
         _LOGGER.info("batt_pack_quantity: %s, batt_quantity: %s", batt_pack_quantity, batt_quantity)
@@ -257,10 +261,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 )
                 # Link to the parent inverter (via_device_id on HA 2026.8+, legacy
                 # via_device tuple otherwise — decided by API support, not lookup success).
+                parent_key = battery_config.get_pack_parent_key(batt_nr) if readBatteryExtended else None
                 link_parent_device(
                     cast(dict[str, Any], device_info_battery),
                     dev_registry,
-                    (DOMAIN, hub_name, INVERTER_IDENT),
+                    (DOMAIN, hub_name, parent_key or INVERTER_IDENT),
                     entry.entry_id,
                 )
 
@@ -322,9 +327,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     readPreparation,
                     readFollowUpBattery,
                 )
-
-        if readBatteryExtended:
-            await _add_extended_battery_entities(hass, entry, hub, hub_name, entities, initial_groups, computedRegs, battery_config)
 
     hub.computedSensors = computedRegs
     async_add_entities(entities)
@@ -986,37 +988,34 @@ async def _add_extended_battery_entities(
     """Create the devices and sensors of the plugin's additional battery levels."""
     dev_registry = dr.async_get(hass)
     for level in await battery_config.async_get_extended_levels(hub):
-        quantity = await level.get_quantity(hub)
-        _LOGGER.info("%s: extended battery level %s: %s instance(s)", hub_name, level.name.replace("{nr}", "").strip(), quantity)
-        for index in range(quantity):
-            device_ident = level.format(level.key, index)
-            key_prefix = level.format(level.sensor_key_prefix, index)
+        _LOGGER.info("%s: extended battery level %s: %s device(s)", hub_name, level.name, len(level.instances))
+        for instance in level.instances:
             device_info = DeviceInfo(
-                identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, device_ident)}),
-                name=f"{hub_name} {level.format(level.name, index)}",
+                identifiers=cast(set[tuple[str, str]], {(DOMAIN, hub_name, instance.key)}),
+                name=f"{hub_name} {instance.name}",
                 manufacturer=hub.plugin.plugin_manufacturer,
             )
-            link_parent_device(cast(dict[str, Any], device_info), dev_registry, (DOMAIN, hub_name, INVERTER_IDENT), entry.entry_id)
+            link_parent_device(
+                cast(dict[str, Any], device_info), dev_registry, (DOMAIN, hub_name, instance.parent_key or INVERTER_IDENT), entry.entry_id
+            )
 
-            async def readPreparation(old_data: Any, level: battery_device_level = level, index: int = index) -> bool:
-                return await level.select(hub, index)
+            async def readPreparation(old_data: Any, level: battery_device_level = level, instance: battery_device_instance = instance) -> bool:
+                return await level.select(hub, instance)
 
             async def readFollowUp(
                 old_data: Any,
                 new_data: Any,
                 level: battery_device_level = level,
-                index: int = index,
-                key_prefix: str = key_prefix,
-                device_ident: str = device_ident,
+                instance: battery_device_instance = instance,
             ) -> bool:
-                if not await level.verify(hub, index, new_data, key_prefix):
+                if not await level.verify(hub, instance, new_data):
                     return False
                 registry = dr.async_get(hass)
-                device = get_device_by_identifier(registry, (DOMAIN, hub_name, device_ident), entry.entry_id)
+                device = get_device_by_identifier(registry, (DOMAIN, hub_name, instance.key), entry.entry_id)
                 if device is not None:
                     changes: dict[str, Any] = {
                         field: value
-                        for field, value in level.get_device_details(new_data, key_prefix).items()
+                        for field, value in level.get_device_details(new_data, instance.key_prefix).items()
                         if getattr(device, field, None) != value
                     }
                     if changes:
@@ -1032,7 +1031,7 @@ async def _add_extended_battery_entities(
                 device_info,
                 level.sensor_types,
                 "",
-                key_prefix,
+                instance.key_prefix,
                 readPreparation,
                 readFollowUp,
             )

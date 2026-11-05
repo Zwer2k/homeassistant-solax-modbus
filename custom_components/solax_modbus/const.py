@@ -2,7 +2,7 @@ import logging
 import pathlib
 from collections.abc import Awaitable, Callable, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Self
@@ -143,29 +143,32 @@ class PollOutcome(StrEnum):
 
 
 @dataclass(kw_only=True)
+class battery_device_instance:
+    """One device of an additional battery level."""
+
+    key: str  # device identifier, unique per config entry
+    name: str  # appended to the hub name
+    key_prefix: str
+    number: int  # value written to the level's query register
+    parent_key: str | None = None  # device identifier of the parent; None links to the inverter
+
+
+@dataclass(kw_only=True)
 class battery_device_level:
     """Additional battery device level, e.g. a tower controller or the DC/DC converters.
 
-    Templates use "{nr}" for the 1-based instance number. Devices of a level are only
-    created when the extended battery readout option is enabled.
+    Devices of a level are only created when the extended battery readout option is enabled.
     """
 
-    key: str  # device identifier template
-    name: str  # device name template, appended to the hub name
-    sensor_key_prefix: str
+    name: str
     sensor_types: list[Any]
+    instances: list[battery_device_instance] = field(default_factory=list)
 
-    def format(self, template: str, index: int) -> str:
-        return template.replace("{nr}", str(index + 1))
-
-    async def get_quantity(self, hub: Any) -> int:
-        return 0
-
-    async def select(self, hub: Any, index: int) -> bool:
+    async def select(self, hub: Any, instance: battery_device_instance) -> bool:
         """Select the instance before its registers are read; selection writes must be volatile (RAM)."""
         return True
 
-    async def verify(self, hub: Any, index: int, new_data: dict[str, Any], key_prefix: str) -> bool:
+    async def verify(self, hub: Any, instance: battery_device_instance, new_data: dict[str, Any]) -> bool:
         """Confirm that the data just read belongs to the selected instance."""
         return True
 
@@ -183,8 +186,15 @@ class base_battery_config:
     battery_sensor_key_prefix: str | None = None
 
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
-        """Return the additional device levels for the extended battery readout."""
+        """Discover the additional device levels for the extended battery readout.
+
+        Called before the pack devices are created, so get_pack_parent_key can use the result.
+        """
         return []
+
+    def get_pack_parent_key(self, batt_nr: int) -> str | None:
+        """Return the device identifier a pack device is linked to; None links to the inverter."""
+        return None
 
     def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
         """Return additional pack sensors for the extended battery readout."""

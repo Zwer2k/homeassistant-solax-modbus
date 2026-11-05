@@ -46,6 +46,7 @@ from custom_components.solax_modbus.const import (
     BaseModbusSensorEntityDescription,
     UnitOfReactivePower,
     base_battery_config,
+    battery_device_instance,
     battery_device_level,
     plugin_base,
     value_function_2byte_timestamp,
@@ -4459,12 +4460,10 @@ BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 class sofar_selectable_level(battery_device_level):
     """BTS device level read through a volatile query register and its ID readback."""
 
-    count_address: int
     inquire_address: int
     id_address: int
-    probe_first_instance: bool = False  # BDU_Number reads 0 after an inverter restart although the BDU answers
 
-    async def _read_u16(self, hub: Any, address: int) -> int | None:
+    async def read_u16(self, hub: Any, address: int) -> int | None:
         try:
             response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=1)
         except Exception:
@@ -4474,34 +4473,34 @@ class sofar_selectable_level(battery_device_level):
             return None
         return int(response.registers[0])
 
-    async def get_quantity(self, hub: Any) -> int:
-        quantity = await self._read_u16(hub, self.count_address) or 0
-        if quantity == 0 and self.probe_first_instance and await self.select(hub, 0):
-            response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.id_address + 1, count=10)
-            if response is not None and not response.isError() and any(response.registers):
-                quantity = 1
-        return quantity
-
-    async def select(self, hub: Any, index: int) -> bool:
-        instance = index + 1
-        if await self._read_u16(hub, self.id_address) == instance:
+    async def select_number(self, hub: Any, number: int) -> bool:
+        if await self.read_u16(hub, self.id_address) == number:
             return True
         try:
-            await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.inquire_address, payload=instance)
+            await hub.async_write_registers_single(unit=hub._modbus_addr, address=self.inquire_address, payload=number)
         except Exception:
-            _LOGGER.warning("Cannot select %s %s via register 0x%x", self.key, instance, self.inquire_address, exc_info=True)
+            _LOGGER.warning("Cannot select %s %s via register 0x%x", self.name, number, self.inquire_address, exc_info=True)
             return False
         for _attempt in range(5):
             await asyncio.sleep(0.2)
-            if await self._read_u16(hub, self.id_address) == instance:
+            if await self.read_u16(hub, self.id_address) == number:
                 return True
-        _LOGGER.warning("Inverter did not select %s %s", self.key, instance)
+        _LOGGER.warning("Inverter did not select %s %s", self.name, number)
         return False
 
-    async def verify(self, hub: Any, index: int, new_data: dict[str, Any], key_prefix: str) -> bool:
-        # The inverter accepts query values without a matching device and then returns zeros.
-        if new_data.get(key_prefix + "id") != index + 1 or not new_data.get(key_prefix + "serial_number"):
-            _LOGGER.warning("Validation failed for %s %s: unexpected ID or missing serial number", self.key, index + 1)
+    async def answers(self, hub: Any, number: int) -> bool:
+        """Return whether the device reports a serial number; the inverter accepts any query value."""
+        if not await self.select_number(hub, number):
+            return False
+        response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=self.id_address + 1, count=10)
+        return response is not None and not response.isError() and any(response.registers)
+
+    async def select(self, hub: Any, instance: battery_device_instance) -> bool:
+        return await self.select_number(hub, instance.number)
+
+    async def verify(self, hub: Any, instance: battery_device_instance, new_data: dict[str, Any]) -> bool:
+        if new_data.get(instance.key_prefix + "id") != instance.number or not new_data.get(instance.key_prefix + "serial_number"):
+            _LOGGER.warning("Validation failed for %s: unexpected ID or missing serial number", instance.name)
             return False
         return True
 
@@ -4533,34 +4532,43 @@ class battery_config(base_battery_config):
     batt_pack_serials: dict[int, dict[int, str]] = field(default_factory=dict)
     selected_batt_nr: int | None = None
     selected_batt_pack_nr: int | None = None
+    single_tower: bool = False  # set by async_get_extended_levels
 
     def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
         return BATTERY_EXTENDED_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
 
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
+        self.single_tower = False
         if not hub._invertertype & BAT_BTS:
             return []
-        return [
-            sofar_selectable_level(
-                key="battery_bdu_{nr}",
-                name="BDU {nr}",
-                sensor_key_prefix="battery_bdu_{nr}_",
-                sensor_types=BDU_SENSOR_TYPES,
-                count_address=0x6084,
-                inquire_address=0x60C4,
-                id_address=0x6090,
-                probe_first_instance=True,
-            ),
-            sofar_selectable_level(
-                key="battery_pcu_{nr}",
-                name="PCU {nr}",
-                sensor_key_prefix="battery_pcu_{nr}_",
-                sensor_types=PCU_SENSOR_TYPES,
-                count_address=0x6004,
-                inquire_address=0x6044,
-                id_address=0x6010,
-            ),
+        bdu = sofar_selectable_level(name="BDU", sensor_types=BDU_SENSOR_TYPES, inquire_address=0x60C4, id_address=0x6090)
+        pcu = sofar_selectable_level(name="PCU", sensor_types=PCU_SENSOR_TYPES, inquire_address=0x6044, id_address=0x6010)
+
+        # BDU_Number reads 0 after an inverter restart although the BDU answers.
+        towers = await bdu.read_u16(hub, 0x6084) or int(await bdu.answers(hub, 1))
+        bdu.instances = [
+            battery_device_instance(key=f"battery_{tower}", name=f"Battery {tower}", key_prefix=f"battery_{tower}_bdu_", number=tower)
+            for tower in range(1, towers + 1)
         ]
+        if towers > 1:
+            # PCU numbers are not unique per tower and their tower assignment is unknown.
+            _LOGGER.warning("%s: %s battery towers found; PCU devices are only supported with a single tower", hub.name, towers)
+        elif towers == 1:
+            self.single_tower = True
+            pcu.instances = [
+                battery_device_instance(
+                    key=f"battery_1_pcu_{number}",
+                    name=f"Battery 1 PCU {number}",
+                    key_prefix=f"battery_1_pcu_{number}_",
+                    number=number,
+                    parent_key="battery_1",
+                )
+                for number in range(1, (await pcu.read_u16(hub, 0x6004) or 0) + 1)
+            ]
+        return [bdu, pcu]
+
+    def get_pack_parent_key(self, batt_nr: int) -> str | None:
+        return "battery_1" if self.single_tower and batt_nr == 0 else None
 
     async def init_batt_pack(self, hub: Any, serial_number: str) -> None:
         assert self.selected_batt_nr is not None
