@@ -33,7 +33,21 @@ def test_derived_bounds_include_native_scaling() -> None:
         read_scale=2,
     )
 
-    assert _native_value_bounds(description) == (-6553.6, 6553.4)
+    assert _native_value_bounds(description) == (-6553, 6553.4)
+
+
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [
+        pytest.param(10, (-16380, 16383.5), id="integer-step"),
+        pytest.param(0.3, (-16383.9, 16383.5), id="fractional-step"),
+    ],
+)
+def test_derived_bounds_are_aligned_to_step(step: float, expected: tuple[float, float]) -> None:
+    """Home Assistant accepts only min + n * step, so the derived minimum must lie on that grid."""
+    description = BaseModbusNumberEntityDescription(key="test", register_data_type=REGISTER_S16, scale=0.5, native_step=step)
+
+    assert _native_value_bounds(description) == expected
 
 
 def test_explicit_bounds_override_derived_bounds_independently() -> None:
@@ -61,4 +75,4 @@ def test_sofar_passive_grid_power_uses_signed_32_bit_bounds() -> None:
 
     assert description.native_min_value is None
     assert description.native_max_value is None
-    assert _native_value_bounds(description) == (-(1 << 31), (1 << 31) - 1)
+    assert _native_value_bounds(description) == (-2147483640, (1 << 31) - 1)
