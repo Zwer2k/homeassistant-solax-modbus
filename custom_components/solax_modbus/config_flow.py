@@ -32,6 +32,7 @@ from homeassistant.helpers.schema_config_entry_flow import (
 )
 
 from .connection import (
+    effective_entry_config,
     matching_config_entries,
 )
 from .const import (
@@ -139,25 +140,19 @@ PLUGINS = [selector.SelectOptionDict(value=getPluginName(i), label=getPluginName
 
 
 INTERFACES = [
-    selector.SelectOptionDict(value="tcp", label="TCP / Ethernet"),
+    selector.SelectOptionDict(value="core_tcp" if supports_core_units() else "tcp", label="TCP / Ethernet"),
     selector.SelectOptionDict(value="core_serial" if supports_core_units() else "serial", label="Serial"),
-    *(
-        [
-            selector.SelectOptionDict(value="core_tcp", label="Home Assistant Modbus (TCP)"),
-        ]
-        if supports_core_units()
-        else []
-    ),
-    selector.SelectOptionDict(value="core", label="Hass core Hub (legacy YAML)"),
 ]
+
+LEGACY_INTERFACE = selector.SelectOptionDict(value="core", label="Hass core Hub (legacy YAML; API removed in HA 2027.10)")
 
 # Removed - using boolean checkbox instead
 
 CONFIG_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-        vol.Required(CONF_INTERFACE, default="tcp"): selector.SelectSelector(
-            selector.SelectSelectorConfig(options=[item for item in INTERFACES if item["value"] != "core"] if supports_core_units() else INTERFACES),
+        vol.Required(CONF_INTERFACE, default="core_tcp" if supports_core_units() else "tcp"): selector.SelectSelector(
+            selector.SelectSelectorConfig(options=INTERFACES),
         ),
         vol.Required(CONF_MODBUS_ADDR, default=DEFAULT_MODBUS_ADDR): int,
         vol.Required(CONF_PLUGIN, default=DEFAULT_PLUGIN): selector.SelectSelector(
@@ -181,7 +176,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 OPTION_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_INTERFACE, default="tcp"): selector.SelectSelector(
+        vol.Required(CONF_INTERFACE, default="core_tcp" if supports_core_units() else "tcp"): selector.SelectSelector(
             selector.SelectSelectorConfig(options=INTERFACES),
         ),
         vol.Required(CONF_MODBUS_ADDR, default=DEFAULT_MODBUS_ADDR): int,
@@ -227,6 +222,7 @@ CORE_SERIAL_SCHEMA = SERIAL_SCHEMA.extend(
 TCP_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
+        vol.Optional("message_wait_milliseconds", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=1000)),
         vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
         vol.Required(CONF_TCP_TYPE, default=DEFAULT_TCP_TYPE): selector.SelectSelector(
             selector.SelectSelectorConfig(options=TCP_TYPES),
@@ -251,6 +247,7 @@ BATTERY_SCHEMA = vol.Schema(
 
 
 async def _validate_base(handler: SchemaCommonFlowHandler, user_input: dict[str, Any]) -> dict[str, Any]:
+    await _validate_interface(handler, user_input)
     _LOGGER.info("validating base: %s", user_input)
     """Validate config."""
     user_input[CONF_INTERFACE]
@@ -277,6 +274,22 @@ async def _validate_base(handler: SchemaCommonFlowHandler, user_input: dict[str,
     if normalized_name in _configured_hub_names(handler):
         raise SchemaFlowError("name_already_used")
 
+    return user_input
+
+
+def _legacy_core_selected(handler: SchemaCommonFlowHandler) -> bool:
+    """Only the persisted entry may retain legacy YAML hub access."""
+    try:
+        entry = getattr(handler.parent_handler, "config_entry", None)
+    except ValueError:
+        return False
+    return entry is not None and effective_entry_config(entry).get(CONF_INTERFACE) == "core"
+
+
+async def _validate_interface(handler: SchemaCommonFlowHandler, user_input: dict[str, Any]) -> dict[str, Any]:
+    """Do not allow a new entry or another interface to opt into legacy access."""
+    if user_input.get(CONF_INTERFACE) == "core" and not _legacy_core_selected(handler):
+        raise SchemaFlowError("legacy_hub_unavailable")
     return user_input
 
 
@@ -427,9 +440,11 @@ async def _option_schema(handler: SchemaCommonFlowHandler) -> vol.Schema:
         hidden.add(CONF_READ_EMS)
     if not _plugin_supports_device_group(plugin_name, "datahub"):
         hidden.add(CONF_READ_DATAHUB)
-    if not hidden:
-        return OPTION_SCHEMA
-    return vol.Schema({marker: value for marker, value in OPTION_SCHEMA.schema.items() if getattr(marker, "schema", None) not in hidden})
+    schema = {marker: value for marker, value in OPTION_SCHEMA.schema.items() if getattr(marker, "schema", None) not in hidden}
+    if _legacy_core_selected(handler):
+        interface = next(marker for marker in schema if getattr(marker, "schema", None) == CONF_INTERFACE)
+        schema[interface] = selector.SelectSelector(selector.SelectSelectorConfig(options=[*INTERFACES, LEGACY_INTERFACE]))
+    return vol.Schema(schema)
 
 
 def _load_plugin(plugin_name: str) -> ModuleType:
@@ -453,7 +468,7 @@ if (MAJOR_VERSION >= 2023) or ((MAJOR_VERSION == 2022) and (MINOR_VERSION >= 12)
         "duplicate_inverter": SchemaFlowFormStep(_duplicate_inverter_schema),
     }
     OPTIONS_FLOW: dict[str, SchemaFlowFormStep | SchemaFlowMenuStep] = {
-        "init": SchemaFlowFormStep(_option_schema, next_step=_next_step_modbus),
+        "init": SchemaFlowFormStep(_option_schema, validate_user_input=_validate_interface, next_step=_next_step_modbus),
         "serial": SchemaFlowFormStep(SERIAL_SCHEMA, next_step=_next_step_battery),
         "tcp": SchemaFlowFormStep(TCP_SCHEMA, validate_user_input=_validate_host, next_step=_next_step_battery),
         "core": SchemaFlowFormStep(CORE_SCHEMA, validate_user_input=_validate_core_modbus_hub, next_step=_next_step_battery),

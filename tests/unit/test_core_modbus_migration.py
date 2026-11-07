@@ -181,7 +181,8 @@ async def test_older_ha_keeps_legacy_connection(migration: Any, monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_native_connection_does_not_read_or_change_yaml(migration: Any) -> None:
+async def test_native_connection_on_older_ha_does_not_read_or_change_yaml(migration: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(core, "supports_core_units", lambda: False)
     migration.entry.options = {CONF_INTERFACE: "tcp", "host": "192.0.2.1"}
 
     assert await core.async_prepare_core_connection(migration.hass, migration.entry) is None
@@ -218,10 +219,10 @@ async def test_migration_selects_transport_without_opening_a_second_link(migrati
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("interface", "supported"), [("tcp", True), ("tcp", False), ("serial", False)])
-async def test_native_connections_remain_on_tcp_or_older_ha(migration: Any, monkeypatch: pytest.MonkeyPatch, interface: str, supported: bool) -> None:
-    """TCP is out of scope; older HA must keep its native serial transport."""
-    monkeypatch.setattr(core, "supports_core_units", lambda: supported)
+@pytest.mark.parametrize("interface", ["tcp", "serial"])
+async def test_modbus_dependency_does_not_migrate_native_connections(migration: Any, monkeypatch: pytest.MonkeyPatch, interface: str) -> None:
+    """Loading HA's libraries must not switch native transports on older HA."""
+    monkeypatch.setattr(core, "supports_core_units", lambda: False)
     migration.entry.options = {CONF_INTERFACE: interface, "host": "192.0.2.1", "name": "SolaX"}
     managed = Mock()
     legacy = Mock()
@@ -707,3 +708,19 @@ async def test_invalid_unit_ids_fail_before_acquisition(unit_transport: Any, uni
     with pytest.raises(HomeAssistantError, match="Invalid Modbus unit ID"):
         await unit_transport.transport.read("holding", unit_id, 10, 2)
     unit_transport.getter.assert_not_called()
+
+
+@pytest.mark.parametrize("milliseconds", [0, 150])
+async def test_native_tcp_migration_preserves_message_spacing(migration: Any, milliseconds: int) -> None:
+    migration.entry.options = {
+        CONF_INTERFACE: "tcp",
+        "name": "Sofar",
+        "host": "192.0.2.1",
+        "port": 502,
+        "message_wait_milliseconds": milliseconds,
+    }
+    await core.async_prepare_core_connection(migration.hass, migration.entry)
+    assert migration.entry.options[CONF_INTERFACE] == "core_tcp"
+    settings = core.configured_core_connection(migration.entry.options)
+    assert settings is not None
+    assert settings["message_wait_milliseconds"] == milliseconds

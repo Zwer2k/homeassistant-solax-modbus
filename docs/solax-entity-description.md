@@ -34,9 +34,17 @@ Amount of energy your inverter stored to the battery today (either from PV or ch
 
 Actual current & power the battery is charged with. Negative values mean the battery is discharged.
 
+## battery_rated_capacity & battery_rated_voltage
+
+Rated capacity (Ah) and rated (nominal) voltage of the battery system, as reported by the inverter. Read only. Currently provided by the X3-NEO-LV plugin (holding registers 0x011A/0x011B).
+
 ## battery_state_of_health
 
 Life percentage of your batteries.
+
+## battery_system_installed_capacity
+
+Total installed (rated) energy capacity of the battery system in Wh. On the X3-NEO-LV it is calculated as `battery_rated_capacity` × `battery_rated_voltage`. It does not decrease with battery ageing (SoH).
 
 ## battery_temperature
 
@@ -98,6 +106,57 @@ Only for Gen 4 inverters, 1.xx is your DSP firmware version.
 
 Shows internal inverter temperature, you can use this information to know if your inverter overheats. Shows no value when the inverter is in idle mode.
 
+## inverter_errors & manager_errors
+
+Read-only diagnostic sensors for X1/X3 Hybrid Gen3, X1/X3 Hybrid Gen4 with a
+detected legacy protocol (1-99), and X3 Hybrid Gen4 with ESS protocol 100 or newer.
+They use input registers `0x0040-0x0041` (32-bit inverter fault word, low word first)
+and `0x0043` (16-bit manager fault word).
+
+The state is `Normal`, `1 active fault`, or e.g. `2 active faults`. Attributes
+contain the original integer `raw_value` and an ordered `active_errors` list:
+
+```yaml
+state: "2 active faults"
+attributes:
+  raw_value: 12
+  active_errors:
+    - "Grid Volt Fault"
+    - "Grid Freq Fault"
+```
+
+For automations, watch `raw_value` or `active_errors`, not only the summary state:
+the active faults can change while their count stays the same. For example,
+this state trigger also fires when the number of faults is unchanged:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: sensor.solax_inverter_errors  # Replace with your entity ID.
+    attribute: raw_value
+conditions:
+  - condition: template
+    value_template: "{{ (state_attr('sensor.solax_inverter_errors', 'raw_value') | int(0)) != 0 }}"
+```
+
+Only a successfully decoded zero fault word means `Normal`. A missing/invalid
+value is `unknown`, with both attributes set to `null`. Set reserved or
+undocumented bits are counted and listed as `Unknown bit N`, never suppressed.
+
+The fault tables are model/protocol-specific. In particular, X1 and X3 use
+different bit positions, and X3 Gen4 bit 16 changes from overload to arc fault
+in the ESS protocol. No fault entities are created for Gen2, IES, VAST, Ultra,
+Aelio, G4 Pro, X1 Gen4 with ESS protocol, or Gen4 with an unknown protocol
+version: the available documentation does not establish their exact mappings.
+Existing run-mode sensors are unchanged. These sensors cover the inverter and
+manager fault words, not BMS fault words or extended fault registers.
+
+Manufacturer protocol references (public mirrors):
+
+- [X1/X3 Hybrid Gen3 Modbus V3.29](https://www.photovoltaikforum.com/core/attachment/418030-solax-hybrid-x1-x3-g3-modbustcp-rtu-v3-29-english-pdf/), PDF pages 23-25.
+- [X1/X3 Hybrid Gen4 Modbus V3.34](https://community.symcon.de/uploads/short-url/mqP43JeDqwGRZSX00o2EhklWrLQ.pdf), Tables 2-3, 2-4 and 2-5.
+- [ESS Modbus V001.02](https://community.symcon.de/uploads/short-url/ecxNpsZsby8yDD7kHPxv4Gz6ENS.pdf), Appendix C. Its example fault table explicitly applies to X3-Hybrid G4, not all ESS models.
+
 ## lease_mode
 
 
@@ -146,6 +205,10 @@ Changes behavior of your inverter. When `inverter`, your inverter will supply ar
 ## phase_power_balance_x3
 
 If enabled, your inverter will send power to your network based on your load. E.g. your phases are loaded 0 kW, 4 kW and 1 kW, so the inverter power will be 0, 4 and 1 kW on phases. If disabled, your inverter will always have the same power on all phases.
+
+## remaining_battery_capacity
+
+"Remaining Battery Energy" - energy currently stored in the battery, in Wh. Where the inverter has no dedicated register it is approximated as installed capacity × SoC (SoH is not taken into account), so for an aged battery it overestimates the real remaining energy.
 
 ## remotecontrol*
 

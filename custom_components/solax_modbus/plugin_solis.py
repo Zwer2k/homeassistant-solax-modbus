@@ -105,7 +105,7 @@ async def async_read_serialnr(hub: Any, address: int, swapbytes: bool) -> str | 
     res = None
     try:
         inverter_data = await hub.async_read_input_registers(unit=hub._modbus_addr, address=address, count=8)
-        if not inverter_data.isError():
+        if inverter_data is not None and not inverter_data.isError():
             raw = convert_from_registers(inverter_data.registers[0:8], DataType.STRING, "big")  # type: ignore[attr-defined]  # Dynamic enum aliasing
             res = raw.decode("ascii", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
             if swapbytes:
@@ -1066,6 +1066,7 @@ SELECT_TYPES = [
             49: "Backup/Reserve - No Timed Charge/Discharge",
             51: "Backup/Reserve",
             64: "Feed-in priority - No Grid Charging",
+            80: "Feed-in priority + Backup/Reserve - No Grid Charging",
             96: "Feed-in priority - No Timed Charge/Discharge",
             98: "Feed-in priority",
         },
@@ -1653,6 +1654,7 @@ SENSOR_TYPES: list[SolisModbusSensorEntityDescription] = [
             49: "Backup/Reserve - No Timed Charge/Discharge",
             51: "Backup/Reserve",
             64: "Feed-in priority - No Grid Charging",
+            80: "Feed-in priority + Backup/Reserve - No Grid Charging",
             96: "Feed-in priority - No Timed Charge/Discharge",
             98: "Feed-in priority",
         },
@@ -2763,12 +2765,16 @@ class solis_plugin(plugin_base):
             invertertype = HYBRID | X1  # Hybrid Gen5 3.6kW - 48v
         elif seriesnumber.startswith("160F5"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3.6kW - 48v
+        elif seriesnumber.startswith("103303"):
+            invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  5kW - HV
         elif seriesnumber.startswith("103305"):
             invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  8kW - HV
-        elif seriesnumber.startswith("103306"):
+        elif seriesnumber.startswith(("103306", "133306")):
             invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  10kW - HV
         elif seriesnumber.startswith("103314"):
             invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  12kW - HV
+        elif seriesnumber.startswith("103315"):
+            invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  15kW - HV (S6-EH3P15K-H) #2468
         elif seriesnumber.startswith("103316"):
             invertertype = HYBRID | X3 | MPPT4  # Hybrid Gen6  20kW - HV (S6-EH3P20K-H)
         elif seriesnumber.startswith("103330"):
@@ -2781,6 +2787,8 @@ class solis_plugin(plugin_base):
             invertertype = HYBRID | X3  # PV Only Gen5 5-20kW
         elif seriesnumber.startswith("2051"):
             invertertype = HYBRID | X1  # Hybrid Gen6 EO1p-48v 5kW
+        elif seriesnumber.startswith("303126"):
+            invertertype = HYBRID | X1  # S6-EH1P8K-L-PLUS, single phase, two MPPTs
         elif seriesnumber.startswith("6031"):
             invertertype = HYBRID | X1  # Hybrid Gen5 3105 / 3122 Model 6kW - 48V
         elif seriesnumber.startswith("6041"):
