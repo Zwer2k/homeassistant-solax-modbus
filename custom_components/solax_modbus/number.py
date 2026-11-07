@@ -1,6 +1,6 @@
 import logging
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from time import time
 from typing import Any
 
@@ -43,11 +43,11 @@ def _native_value_bounds(number_info: BaseModbusNumberEntityDescription) -> tupl
         derived_min, derived_max = DEFAULT_MIN_VALUE, DEFAULT_MAX_VALUE
     else:
         native_scale = Decimal(str(number_info.scale)) * Decimal(str(number_info.read_scale))
-        scaled_bounds = (
-            float(Decimal(str(register_bounds[0])) * native_scale),
-            float(Decimal(str(register_bounds[1])) * native_scale),
-        )
-        derived_min, derived_max = min(scaled_bounds), max(scaled_bounds)
+        scaled_bounds = (Decimal(str(register_bounds[0])) * native_scale, Decimal(str(register_bounds[1])) * native_scale)
+        # The frontend only accepts min + n * step, so the derived minimum must lie on the step grid.
+        step = Decimal(str(number_info.native_step or 1))
+        derived_min = float((min(scaled_bounds) / step).to_integral_value(ROUND_CEILING) * step)
+        derived_max = float(max(scaled_bounds))
 
     native_min = number_info.native_min_value if number_info.native_min_value is not None else derived_min
     native_max = number_info.native_max_value if number_info.native_max_value is not None else derived_max
