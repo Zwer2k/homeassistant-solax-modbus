@@ -1,15 +1,22 @@
 """DC/DC loss and efficiency of a SOFAR BTS tower from a sliding window."""
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from custom_components.solax_modbus import plugin_sofar
 from custom_components.solax_modbus.const import battery_device_instance, is_inputless_computed_sensor
 from custom_components.solax_modbus.plugin_sofar import (
+    BAT_BTS,
     DCDC_MIN_SAMPLES,
     DCDC_SENSOR_TYPES,
     DCDC_WINDOW_SECONDS,
+    HYBRID,
+    X3,
+    battery_config,
     dcdc_efficiency_window,
+    energy_ratio_window,
     sofar_pcu_level,
 )
 from custom_components.solax_modbus.sensor import _prefix_local_dependencies
@@ -128,3 +135,75 @@ async def test_rejected_pcu_read_does_not_feed_the_window() -> None:
 
     assert await level.verify(None, level.instances[0], data) is False
     assert list(level.window.samples) == []
+
+
+@pytest.mark.parametrize(
+    ("samples", "efficiency", "loss"),
+    [
+        pytest.param([(513, 500, True)], 97.5, 13, id="battery-to-ac"),
+        pytest.param([(513, 500, True), (5000, 4800, False)], 97.5, 106, id="excluded-samples-only-count-for-loss"),
+        pytest.param([(40, 30, True)], None, 10, id="below-min-power"),
+        pytest.param([(500, 600, True)], None, -100, id="skewed-above-100-percent"),
+    ],
+)
+def test_energy_ratio_window(samples: list[tuple[float, float, bool]], efficiency: float | None, loss: float) -> None:
+    window = energy_ratio_window()
+    for second in range(DCDC_MIN_SAMPLES * len(samples)):
+        power_in, power_out, counts = samples[second % len(samples)]
+        window.add(second, power_in, power_out, counts)
+
+    assert window.efficiency == efficiency
+    assert window.loss == loss
+
+
+class InverterHub:
+    """Inverter answering the efficiency reads with the evening values measured on the real system."""
+
+    def __init__(self, invertertype: int) -> None:
+        self._modbus_addr = 1
+        self._invertertype = invertertype
+        self.reads: list[int] = []
+        self.registers = {0x485: 50, 0x604: 3955, 0x605: 0x10000 - 130}  # 500 W AC, 395.5 V * -1.30 A
+
+    async def async_read_holding_registers(self, unit: int, address: int, count: int) -> SimpleNamespace:
+        self.reads.append(address)
+        return SimpleNamespace(registers=[self.registers.get(address + i, 0) for i in range(count)], isError=lambda: False)
+
+
+@pytest.mark.asyncio
+async def test_inverter_efficiency_from_battery_discharge(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = battery_config()
+    config.pcu_level = _level(1)
+    config.pcu_level.window.efficiency["discharge"] = 76.7
+    hub = InverterHub(HYBRID | X3 | BAT_BTS)
+    clock = iter(range(0, 10_000, 15))
+    monkeypatch.setattr(plugin_sofar, "monotonic", lambda: next(clock))
+    data: dict[str, Any] = {}
+
+    for _ in range(DCDC_MIN_SAMPLES):
+        await config.async_inverter_follow_up(hub, data)
+
+    assert data["inverter_loss"] == 14
+    assert data["inverter_efficiency"] == 97.2
+    assert data["battery_1_bdu_battery_to_ac_efficiency"] == round(76.7 * 97.2 / 100, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("invertertype", "times", "expected_samples"),
+    [
+        pytest.param(HYBRID | X3 | BAT_BTS, [0, 5, 10], 2, id="throttled-to-10-seconds"),
+        pytest.param(HYBRID | X3, [0, 15], 0, id="without-bts"),
+    ],
+)
+async def test_inverter_sampling(monkeypatch: pytest.MonkeyPatch, invertertype: int, times: list[int], expected_samples: int) -> None:
+    config = battery_config()
+    hub = InverterHub(invertertype)
+    clock = iter(times)
+    monkeypatch.setattr(plugin_sofar, "monotonic", lambda: next(clock) + 100)
+
+    for _ in times:
+        await config.async_inverter_follow_up(hub, {})
+
+    assert len(config.inverter_window.samples) == expected_samples
+    assert hub.reads == [0x485, 0x584, 0x604] * expected_samples

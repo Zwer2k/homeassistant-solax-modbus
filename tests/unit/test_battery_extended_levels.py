@@ -47,6 +47,7 @@ class FakeBatteryConfig(base_battery_config):
     pack_quantity: int = 0
     extended_pack_sensor_types: list[Any] = field(default_factory=list)
     pack_parent_key: str | None = None
+    inverter_follow_ups: int = 0
 
     async def get_batt_pack_quantity(self, hub: Any) -> int:
         return self.pack_quantity
@@ -68,6 +69,12 @@ class FakeBatteryConfig(base_battery_config):
 
     def get_pack_parent_key(self, batt_nr: int) -> str | None:
         return self.pack_parent_key
+
+    def get_extended_inverter_sensor_types(self, hub: Any) -> list[Any]:
+        return ["inverter_extended"]
+
+    async def async_inverter_follow_up(self, hub: Any, new_data: dict[str, Any]) -> None:
+        self.inverter_follow_ups += 1
 
 
 def _level() -> FakeLevel:
@@ -260,3 +267,26 @@ async def test_base_battery_config_creates_no_devices(monkeypatch: pytest.Monkey
 
     assert _level_calls(entity_to_list) == []
     link_parent.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extended", "expected_sensors", "expected_follow_ups"),
+    [
+        pytest.param(False, [], 0, id="extended-disabled"),
+        pytest.param(True, ["inverter_extended"], 1, id="extended-enabled"),
+    ],
+)
+async def test_extended_inverter_hooks_require_option(
+    monkeypatch: pytest.MonkeyPatch, extended: bool, expected_sensors: list[str], expected_follow_ups: int
+) -> None:
+    """Inverter sensors and the follow-up of the extended readout only run with the opt-in."""
+    config = FakeBatteryConfig()
+    entity_to_list, _, _ = _setup(monkeypatch, config)
+
+    await _setup_entry(config, {CONF_READ_BATTERY: True, CONF_READ_BATTERY_EXTENDED: extended})
+
+    inverter_call = next(entity_call for entity_call in entity_to_list.call_args_list if entity_call.args[8] == "")
+    assert inverter_call.args[6] == expected_sensors
+    assert await inverter_call.args[10]({}, {}) is True
+    assert config.inverter_follow_ups == expected_follow_ups

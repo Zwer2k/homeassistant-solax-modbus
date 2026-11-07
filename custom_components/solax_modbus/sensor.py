@@ -166,6 +166,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     plugin = hub.plugin  # getPlugin(hub_name)
 
+    readBattery = entry.options.get(CONF_READ_BATTERY, False)
+    readBatteryExtended = entry.options.get(CONF_READ_BATTERY_EXTENDED, False)
+    extended_battery_config = plugin.BATTERY_CONFIG if readBattery and readBatteryExtended else None
+
     async def readFollowUp(old_data: Any, new_data: Any) -> bool:
         dev_registry = dr.async_get(hass)
         device = get_device_by_identifier(dev_registry, (DOMAIN, hub_name, INVERTER_IDENT), entry.entry_id)
@@ -175,6 +179,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             if sw_version is not None or hw_version is not None:
                 dev_registry.async_update_device(device.id, sw_version=sw_version, hw_version=hw_version)
+        if extended_battery_config is not None:
+            await extended_battery_config.async_inverter_follow_up(hub, new_data)
         return True
 
     # Entity names never carry the inverter suffix — the device name provides that context.
@@ -195,7 +201,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         initial_groups,
         computedRegs,
         hub.device_info,
-        plugin.SENSOR_TYPES,
+        plugin.SENSOR_TYPES + (extended_battery_config.get_extended_inverter_sensor_types(hub) if extended_battery_config else []),
         inverter_name_suffix,
         "",
         None,
@@ -216,8 +222,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     # Energy Dashboard check moved to after rebuild_blocks (see below) so initial_groups are ready for reading
 
-    readBattery = entry.options.get(CONF_READ_BATTERY, False)
-    readBatteryExtended = entry.options.get(CONF_READ_BATTERY_EXTENDED, False)
     if readBattery and plugin.BATTERY_CONFIG is not None:
         battery_config = plugin.BATTERY_CONFIG
         pack_sensor_types = list(battery_config.battery_sensor_type or [])

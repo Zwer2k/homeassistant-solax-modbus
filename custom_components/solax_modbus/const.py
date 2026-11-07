@@ -243,6 +243,13 @@ class base_battery_config:
         """Return additional pack sensors for the extended battery readout."""
         return []
 
+    def get_extended_inverter_sensor_types(self, hub: Any) -> list[Any]:
+        """Return additional inverter sensors for the extended battery readout."""
+        return []
+
+    async def async_inverter_follow_up(self, hub: Any, new_data: dict[str, Any]) -> None:
+        """Called after each inverter poll with the extended battery readout enabled."""
+
 
 @dataclass
 class plugin_base:

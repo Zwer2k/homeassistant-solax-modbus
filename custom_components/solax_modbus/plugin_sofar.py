@@ -1,10 +1,10 @@
 import asyncio
 import logging
-import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
 from homeassistant.components.number import NumberDeviceClass
@@ -4557,7 +4557,76 @@ DCDC_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         )
         for direction in ("charge", "discharge")
     ],
+    SofarModbusSensorEntityDescription(
+        name="Battery to AC Efficiency",
+        key="battery_to_ac_efficiency",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
+        allowedtypes=BAT_BTS,
+        icon="mdi:percent-circle-outline",
+    ),
 ]
+
+INVERTER_EFFICIENCY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        name="Inverter Loss",
+        key="inverter_loss",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
+        allowedtypes=HYBRID | BAT_BTS,
+        icon="mdi:fire",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Inverter Efficiency",
+        key="inverter_efficiency",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
+        allowedtypes=HYBRID | BAT_BTS,
+        icon="mdi:percent-circle-outline",
+    ),
+]
+
+
+@dataclass
+class energy_ratio_window:
+    """Sliding-window loss and efficiency as ratio of output to input energy."""
+
+    seconds: float = DCDC_WINDOW_SECONDS
+    samples: deque[tuple[float, float, float, bool]] = field(default_factory=deque)
+    efficiency: float | None = None  # last valid value
+
+    def add(self, now: float, power_in: float, power_out: float, counts: bool = True) -> None:
+        """Add a sample; only samples with counts=True and enough input power enter the efficiency."""
+        self.samples.append((now, power_in, power_out, counts))
+        while self.samples[0][0] < now - self.seconds:
+            self.samples.popleft()
+        pairs = [(p_in, p_out) for _t, p_in, p_out, used in self.samples if used and p_in >= DCDC_MIN_POWER]
+        if len(pairs) < DCDC_MIN_SAMPLES:
+            return
+        ratio = sum(p_out for _p_in, p_out in pairs) / sum(p_in for p_in, _p_out in pairs)
+        if ratio <= 1:  # above 1 only measurement skew; keep the last valid value
+            self.efficiency = round(100 * ratio, 1)
+
+    @property
+    def loss(self) -> float | None:
+        if len(self.samples) < DCDC_MIN_SAMPLES:
+            return None
+        return round(sum(p_in - p_out for _t, p_in, p_out, _used in self.samples) / len(self.samples))
 
 
 @dataclass
@@ -4667,7 +4736,7 @@ class sofar_pcu_level(sofar_selectable_level):
             high = sum(new_data[f"{prefix}battery_voltage_{nr}"] * new_data[f"{prefix}battery_current_{nr}"] for nr in (1, 2))
         except (KeyError, TypeError):
             return True
-        now = time.monotonic()
+        now = monotonic()
         self.low_side[instance.number] = (now, low)
         # Pair the fresh high-side value with the latest reading of every PCU.
         if len(self.low_side) == len(self.instances) and all(now - seen < 120 for seen, _low in self.low_side.values()):
@@ -4699,12 +4768,62 @@ class battery_config(base_battery_config):
     selected_batt_nr: int | None = None
     selected_batt_pack_nr: int | None = None
     single_tower: bool = False  # set by async_get_extended_levels
+    pcu_level: sofar_pcu_level | None = None  # set by async_get_extended_levels for a single tower
+    inverter_window: energy_ratio_window = field(default_factory=energy_ratio_window)
+    inverter_discharge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
+    inverter_sampled: float = float("-inf")
+
+    def get_extended_inverter_sensor_types(self, hub: Any) -> list[Any]:
+        return INVERTER_EFFICIENCY_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
+
+    async def _read_block(self, hub: Any, address: int, count: int) -> list[int] | None:
+        try:
+            response = await hub.async_read_holding_registers(unit=hub._modbus_addr, address=address, count=count)
+        except Exception:
+            _LOGGER.debug("Cannot read 0x%x for the efficiency", address, exc_info=True)
+            return None
+        if response is None or response.isError():
+            return None
+        return list(response.registers)
+
+    async def async_inverter_follow_up(self, hub: Any, new_data: dict[str, Any]) -> None:
+        """Sample PV, battery and AC power in one go for the inverter efficiency window."""
+        now = monotonic()
+        if not hub._invertertype & BAT_BTS or now - self.inverter_sampled < 10:
+            return
+        self.inverter_sampled = now
+        ac = await self._read_block(hub, 0x485, 1)
+        pv = await self._read_block(hub, 0x584, 6)  # voltage, current, power of MPPT 1 and 2
+        battery = await self._read_block(hub, 0x604, 9)  # voltage and current of inputs 1 (0x604) and 2 (0x60B)
+        if ac is None or pv is None or battery is None:
+            return
+
+        def s16(value: int) -> int:
+            return value - 0x10000 if value & 0x8000 else value
+
+        ac_power = s16(ac[0]) * 10  # positive: AC output, includes the EPS output
+        pv_power = sum(pv[i] / 10 * pv[i + 1] / 100 for i in (0, 3))
+        battery_power = sum(battery[i] / 10 * s16(battery[i + 1]) / 100 for i in (0, 7))  # negative: discharge
+        power_in = pv_power + max(-battery_power, 0) + max(-ac_power, 0)
+        power_out = max(ac_power, 0) + max(battery_power, 0)
+        self.inverter_window.add(now, power_in, power_out)
+        # Battery-only discharge isolates the battery to AC path.
+        self.inverter_discharge_window.add(now, power_in, power_out, pv_power < 20 and battery_power <= -DCDC_MIN_POWER)
+        new_data["inverter_loss"] = self.inverter_window.loss
+        new_data["inverter_efficiency"] = self.inverter_window.efficiency
+        dcdc = self.pcu_level.window.efficiency.get("discharge") if self.pcu_level else None
+        inverter = self.inverter_discharge_window.efficiency
+        if self.pcu_level is not None:
+            new_data[self.pcu_level.tower_key_prefix + "battery_to_ac_efficiency"] = (
+                round(dcdc * inverter / 100, 1) if dcdc is not None and inverter is not None else None
+            )
 
     def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
         return BATTERY_EXTENDED_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
 
     async def async_get_extended_levels(self, hub: Any) -> list[battery_device_level]:
         self.single_tower = False
+        self.pcu_level = None
         if not hub._invertertype & BAT_BTS:
             return []
         bdu = sofar_selectable_level(name="BDU", sensor_types=BDU_SENSOR_TYPES, inquire_address=0x60C4, id_address=0x6090)
@@ -4721,6 +4840,7 @@ class battery_config(base_battery_config):
             _LOGGER.warning("%s: %s battery towers found; PCU devices are only supported with a single tower", hub.name, towers)
         elif towers == 1:
             self.single_tower = True
+            self.pcu_level = pcu
             bdu.sensor_types = BDU_SENSOR_TYPES + DCDC_SENSOR_TYPES
             pcu.instances = [
                 battery_device_instance(
