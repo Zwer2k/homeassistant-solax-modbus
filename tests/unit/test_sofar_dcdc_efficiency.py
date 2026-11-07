@@ -177,7 +177,7 @@ async def test_inverter_efficiency_from_battery_discharge(monkeypatch: pytest.Mo
     config.pcu_level.window.efficiency["discharge"] = 76.7
     hub = InverterHub(HYBRID | X3 | BAT_BTS)
     clock = iter(range(0, 10_000, 15))
-    monkeypatch.setattr(plugin_sofar, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock))
     data: dict[str, Any] = {}
 
     for _ in range(DCDC_MIN_SAMPLES):
@@ -200,10 +200,29 @@ async def test_inverter_sampling(monkeypatch: pytest.MonkeyPatch, invertertype: 
     config = battery_config()
     hub = InverterHub(invertertype)
     clock = iter(times)
-    monkeypatch.setattr(plugin_sofar, "monotonic", lambda: next(clock) + 100)
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock) + 100)
 
     for _ in times:
         await config.async_inverter_follow_up(hub, {})
 
     assert len(config.inverter_window.samples) == expected_samples
     assert hub.reads == [0x485, 0x584, 0x604] * expected_samples
+
+
+@pytest.mark.asyncio
+async def test_window_drops_samples_from_before_host_suspend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a suspend the stale low-side readings and window samples must not be reused."""
+    level = _level(2)
+    clock = iter([0, 1, 36_000, 36_001])
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock))
+
+    for number in (1, 2):
+        await level.verify(None, level.instances[number - 1], _pcu_data(number, -5.0))
+    assert [sample[0] for sample in level.window.samples] == [1]
+
+    # Ten hours later PCU 1 alone must not pair with the stale PCU 2 reading.
+    await level.verify(None, level.instances[0], _pcu_data(1, -5.0))
+    assert [sample[0] for sample in level.window.samples] == [1]
+
+    await level.verify(None, level.instances[1], _pcu_data(2, -5.0))
+    assert [sample[0] for sample in level.window.samples] == [36_001]

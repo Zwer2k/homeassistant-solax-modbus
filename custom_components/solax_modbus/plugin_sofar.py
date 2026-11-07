@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from time import monotonic
+from time import time as wall_clock  # keeps running while the host is suspended, unlike monotonic
 from typing import Any
 
 from homeassistant.components.number import NumberDeviceClass
@@ -4736,7 +4736,7 @@ class sofar_pcu_level(sofar_selectable_level):
             high = sum(new_data[f"{prefix}battery_voltage_{nr}"] * new_data[f"{prefix}battery_current_{nr}"] for nr in (1, 2))
         except (KeyError, TypeError):
             return True
-        now = monotonic()
+        now = wall_clock()
         self.low_side[instance.number] = (now, low)
         # Pair the fresh high-side value with the latest reading of every PCU.
         if len(self.low_side) == len(self.instances) and all(now - seen < 120 for seen, _low in self.low_side.values()):
@@ -4788,7 +4788,7 @@ class battery_config(base_battery_config):
 
     async def async_inverter_follow_up(self, hub: Any, new_data: dict[str, Any]) -> None:
         """Sample PV, battery and AC power in one go for the inverter efficiency window."""
-        now = monotonic()
+        now = wall_clock()
         if not hub._invertertype & BAT_BTS or now - self.inverter_sampled < 10:
             return
         self.inverter_sampled = now
