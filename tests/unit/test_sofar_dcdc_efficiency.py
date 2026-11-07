@@ -197,6 +197,7 @@ async def test_inverter_efficiency_from_battery_discharge(monkeypatch: pytest.Mo
     ],
 )
 async def test_inverter_sampling(monkeypatch: pytest.MonkeyPatch, invertertype: int, times: list[int], expected_samples: int) -> None:
+    """Power is sampled at most every 10 s; the depth of discharge only every 10 minutes."""
     config = battery_config()
     hub = InverterHub(invertertype)
     clock = iter(times)
@@ -206,7 +207,7 @@ async def test_inverter_sampling(monkeypatch: pytest.MonkeyPatch, invertertype: 
         await config.async_inverter_follow_up(hub, {})
 
     assert len(config.inverter_window.samples) == expected_samples
-    assert hub.reads == [0x485, 0x584, 0x604] * expected_samples
+    assert hub.reads == ([0x104D] if expected_samples else []) + [0x485, 0x584, 0x604] * expected_samples
 
 
 @pytest.mark.asyncio

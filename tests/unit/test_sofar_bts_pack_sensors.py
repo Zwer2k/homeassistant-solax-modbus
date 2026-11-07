@@ -17,6 +17,7 @@ from custom_components.solax_modbus.plugin_sofar import (
     X3,
     battery_config,
     plugin_instance,
+    soc_capacity_fit,
 )
 
 # Pack_RT_SN0..SN9 (0x9047-0x9050) of a BTS 5K module
@@ -79,3 +80,45 @@ def test_battery_voltage_and_current_names_per_model(invertertype: int, serial: 
     ]
 
     assert names == expected_names
+
+
+@pytest.mark.parametrize(
+    ("soc_values", "expected"),
+    [
+        pytest.param(range(10, 91, 5), 0.904, id="learned"),
+        pytest.param(range(40, 59), None, id="soc-span-too-small"),
+    ],
+)
+def test_soc_capacity_fit_learns_ah_per_percent(soc_values: range, expected: float | None) -> None:
+    fit = soc_capacity_fit()
+    for soc in soc_values:
+        fit.add(soc, 17 + 0.904 * soc)  # module 1/1: 17 Ah below SOC 0 % (BMS reserve)
+
+    assert fit.ah_per_percent == (pytest.approx(expected) if expected else None)
+
+
+PACK_DATA = {
+    "battery_1_1_soc": 33,
+    "battery_1_1_pack_remaining_capacity": 49.2,
+    "battery_1_1_pack_full_charge_capacity": 104.8,
+    "battery_1_1_total_voltage": 52.5,
+}
+
+
+@pytest.mark.parametrize(
+    ("depth_of_discharge", "remaining", "usable"),
+    [
+        # 0.86 * 104.8 Ah / 100 = 0.901 Ah per % until enough SOC span is learned
+        pytest.param(90, 1.09, 4.26, id="above-discharge-limit"),
+        pytest.param(60, 0.0, 2.84, id="below-discharge-limit"),
+        pytest.param(None, None, None, id="depth-of-discharge-unknown"),
+    ],
+)
+def test_pack_energy_excludes_reserves(depth_of_discharge: int | None, remaining: float | None, usable: float | None) -> None:
+    config = battery_config(depth_of_discharge=depth_of_discharge)
+    data = dict(PACK_DATA)
+
+    config._update_pack_energy(data, "battery_1_1_")
+
+    assert data["battery_1_1_remaining_energy"] == remaining
+    assert data["battery_1_1_usable_energy"] == usable

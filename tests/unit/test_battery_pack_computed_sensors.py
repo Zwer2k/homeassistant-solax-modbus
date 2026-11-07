@@ -56,7 +56,7 @@ def test_pack_sensors_are_computed_from_their_own_pack() -> None:
         for descr in BATTERY_SENSOR_TYPES + BATTERY_EXTENDED_SENSOR_TYPES:
             prefixed = _prefix_local_dependencies(replace(descr, key=prefix + str(descr.key)), prefix, pack_keys)
             hub.sensorDescriptions[prefixed.key] = prefixed
-            if prefixed.value_function:
+            if prefixed.value_function and prefixed.depends_on:
                 hub.computedSensors[prefixed.key] = prefixed
     data: dict[str, Any] = {
         "battery_1_1_cell_max_voltage": 3.282,
@@ -71,11 +71,7 @@ def test_pack_sensors_are_computed_from_their_own_pack() -> None:
 
     assert hub._compute_poll_sensors(data, fresh) == {
         "battery_1_1_cell_voltage_difference",
-        "battery_1_1_remaining_energy",
-        "battery_1_1_full_charge_energy",
         "battery_1_2_cell_voltage_difference",
     }
     assert data["battery_1_1_cell_voltage_difference"] == 0.003
     assert data["battery_1_2_cell_voltage_difference"] == 0.1
-    assert data["battery_1_1_remaining_energy"] == 2.58
-    assert data["battery_1_1_full_charge_energy"] == 5.5

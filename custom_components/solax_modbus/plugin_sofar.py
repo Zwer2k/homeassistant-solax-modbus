@@ -4444,10 +4444,42 @@ def value_function_difference(initval: Any, descr: Any, datadict: dict[str, Any]
     return round(float(datadict[minuend]) - float(datadict[subtrahend]), 3)
 
 
-def value_function_capacity_energy(initval: Any, descr: Any, datadict: dict[str, Any]) -> float:
-    """Estimate kWh from a capacity in Ah and the current module voltage."""
-    capacity, voltage = descr.depends_on
-    return round(float(datadict[capacity]) * float(datadict[voltage]) / 1000, 2)
+def value_function_stored(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
+    return datadict.get(descr.key)
+
+
+# BTS 5K BMS: SOC 0 % still leaves about 14 % of the full charge capacity (measured on four modules).
+BMS_RESERVE_SHARE = 0.14
+SOC_FIT_MIN_SPAN = 20  # % SOC needed before the learned Ah per % replaces the default
+
+
+@dataclass
+class soc_capacity_fit:
+    """Least-squares fit of remaining capacity (Ah) over SOC (%), learning the Ah per SOC percent."""
+
+    n: int = 0
+    sum_soc: float = 0.0
+    sum_capacity: float = 0.0
+    sum_soc2: float = 0.0
+    sum_soc_capacity: float = 0.0
+    soc_min: float = 100.0
+    soc_max: float = 0.0
+
+    def add(self, soc: float, capacity: float) -> None:
+        self.n += 1
+        self.sum_soc += soc
+        self.sum_capacity += capacity
+        self.sum_soc2 += soc * soc
+        self.sum_soc_capacity += soc * capacity
+        self.soc_min = min(self.soc_min, soc)
+        self.soc_max = max(self.soc_max, soc)
+
+    @property
+    def ah_per_percent(self) -> float | None:
+        if self.soc_max - self.soc_min < SOC_FIT_MIN_SPAN:
+            return None
+        variance = self.n * self.sum_soc2 - self.sum_soc**2
+        return (self.n * self.sum_soc_capacity - self.sum_soc * self.sum_capacity) / variance
 
 
 # Bit meanings of the pack alarm/protection/fault words are not documented by SOFAR.
@@ -4465,24 +4497,29 @@ BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=BAT_BTS,
         icon="mdi:sigma",
     ),
+    # Energy the inverter can still draw down to its depth of discharge; set by check_battery_on_end.
     SofarModbusSensorEntityDescription(
         name="Remaining Energy",
         key="remaining_energy",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_function=value_function_capacity_energy,
-        depends_on=["pack_remaining_capacity", "total_voltage"],
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
         allowedtypes=BAT_BTS,
     ),
     SofarModbusSensorEntityDescription(
-        name="Full Charge Energy",
-        key="full_charge_energy",
+        name="Usable Energy",
+        key="usable_energy",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY_STORAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_function=value_function_capacity_energy,
-        depends_on=["pack_full_charge_capacity", "total_voltage"],
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
         entity_category=EntityCategory.DIAGNOSTIC,
         allowedtypes=BAT_BTS,
     ),
@@ -4529,10 +4566,6 @@ BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 DCDC_WINDOW_SECONDS = 600
 DCDC_MIN_POWER = 50  # W; below this the direction of the power flow is not reliable
 DCDC_MIN_SAMPLES = 10
-
-
-def value_function_stored(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
-    return datadict.get(descr.key)
 
 
 DCDC_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
@@ -4780,6 +4813,9 @@ class battery_config(base_battery_config):
     inverter_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_discharge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_sampled: float = float("-inf")
+    depth_of_discharge: int | None = None  # 0x104D, refreshed by async_inverter_follow_up
+    depth_of_discharge_read: float = float("-inf")
+    capacity_fits: dict[str, soc_capacity_fit] = field(default_factory=dict)  # per pack key prefix
 
     def get_extended_inverter_sensor_types(self, hub: Any) -> list[Any]:
         return INVERTER_EFFICIENCY_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
@@ -4797,7 +4833,12 @@ class battery_config(base_battery_config):
     async def async_inverter_follow_up(self, hub: Any, new_data: dict[str, Any]) -> None:
         """Sample PV, battery and AC power in one go for the inverter efficiency window."""
         now = wall_clock()
-        if not hub._invertertype & BAT_BTS or now - self.inverter_sampled < 10:
+        if not hub._invertertype & BAT_BTS:
+            return
+        if now - self.depth_of_discharge_read >= 600 and (dod := await self._read_block(hub, 0x104D, 1)) is not None:
+            self.depth_of_discharge_read = now
+            self.depth_of_discharge = dod[0]
+        if now - self.inverter_sampled < 10:
             return
         self.inverter_sampled = now
         ac = await self._read_block(hub, 0x485, 1)
@@ -5011,7 +5052,27 @@ class battery_config(base_battery_config):
         # Selection identifies the requested pack. A stored serial is device metadata,
         # not a permanent validation constraint (packs can be replaced or reordered).
         self.batt_pack_serials.setdefault(batt_nr, {})[batt_pack_nr] = serial
+        self._update_pack_energy(new_data, key_prefix)
         return True
+
+    def _update_pack_energy(self, new_data: dict[str, Any], key_prefix: str) -> None:
+        """Energy above the inverter's discharge limit; SOC already excludes the BMS reserve."""
+        try:
+            soc = float(new_data[key_prefix + "soc"])
+            remaining = float(new_data[key_prefix + "pack_remaining_capacity"])
+            full = float(new_data[key_prefix + "pack_full_charge_capacity"])
+            voltage = float(new_data[key_prefix + "total_voltage"])
+        except (KeyError, TypeError, ValueError):
+            return
+        fit = self.capacity_fits.setdefault(key_prefix, soc_capacity_fit())
+        fit.add(soc, remaining)
+        ah_per_percent = fit.ah_per_percent or full * (1 - BMS_RESERVE_SHARE) / 100
+        if self.depth_of_discharge is None:
+            new_data[key_prefix + "remaining_energy"] = new_data[key_prefix + "usable_energy"] = None
+            return
+        floor = 100 - self.depth_of_discharge
+        new_data[key_prefix + "remaining_energy"] = round(max(soc - floor, 0) * ah_per_percent * voltage / 1000, 2)
+        new_data[key_prefix + "usable_energy"] = round(self.depth_of_discharge * ah_per_percent * voltage / 1000, 2)
 
     async def _determine_bat_quantitys(self, hub: Any) -> None:
         try:
