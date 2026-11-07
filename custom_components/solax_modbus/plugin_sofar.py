@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -4263,6 +4265,21 @@ BDU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 ]
 
 PCU_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    # Inverter battery inputs, read in the same poll as each PCU for the DC/DC efficiency.
+    *[
+        SofarModbusSensorEntityDescription(
+            key=f"battery_{quantity}_{nr}",
+            register=address,
+            register_data_type=REGISTER_S16 if quantity == "current" else REGISTER_U16,
+            scale=0.01 if quantity == "current" else 0.1,
+            newblock=address == 0x604,
+            internal=True,
+            scan_group=SCAN_GROUP_MEDIUM,
+            allowedtypes=BAT_BTS,
+        )
+        for nr, base in ((1, 0x604), (2, 0x60B))
+        for quantity, address in (("voltage", base), ("current", base + 1))
+    ],
     SofarModbusSensorEntityDescription(
         key="id",
         register=0x6010,
@@ -4501,6 +4518,81 @@ BATTERY_EXTENDED_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 ]
 
 
+DCDC_WINDOW_SECONDS = 600
+DCDC_MIN_POWER = 50  # W; below this the direction of the power flow is not reliable
+DCDC_MIN_SAMPLES = 10
+
+
+def value_function_stored(initval: Any, descr: Any, datadict: dict[str, Any]) -> Any:
+    return datadict.get(descr.key)
+
+
+DCDC_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
+    SofarModbusSensorEntityDescription(
+        name="DC/DC Loss",
+        key="dcdc_loss",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_function=value_function_stored,
+        depends_on=[],
+        recompute_each_poll=True,
+        allow_none=True,
+        allowedtypes=BAT_BTS,
+        icon="mdi:fire",
+    ),
+    *[
+        SofarModbusSensorEntityDescription(
+            name=f"DC/DC Efficiency {direction.capitalize()}",
+            key=f"dcdc_efficiency_{direction}",
+            native_unit_of_measurement=PERCENTAGE,
+            state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=1,
+            value_function=value_function_stored,
+            depends_on=[],
+            recompute_each_poll=True,
+            allow_none=True,
+            allowedtypes=BAT_BTS,
+            icon="mdi:percent-circle-outline",
+        )
+        for direction in ("charge", "discharge")
+    ],
+]
+
+
+@dataclass
+class dcdc_efficiency_window:
+    """Sliding-window DC/DC loss and efficiency from paired high-side and summed low-side power.
+
+    Power is negative while discharging on both sides. Efficiencies are energy ratios over the
+    window, so samples taken at slightly different times average out.
+    """
+
+    seconds: float = DCDC_WINDOW_SECONDS
+    samples: deque[tuple[float, float, float]] = field(default_factory=deque)
+    efficiency: dict[str, float] = field(default_factory=dict)  # last valid value per direction
+
+    def add(self, now: float, high_side: float, low_side: float) -> None:
+        self.samples.append((now, high_side, low_side))
+        while self.samples[0][0] < now - self.seconds:
+            self.samples.popleft()
+        for direction, sign in (("charge", 1), ("discharge", -1)):
+            pairs = [(abs(high), abs(low)) for _t, high, low in self.samples if sign * low >= DCDC_MIN_POWER and sign * high > 0]
+            if len(pairs) < DCDC_MIN_SAMPLES:
+                continue
+            high_energy = sum(high for high, _low in pairs)
+            low_energy = sum(low for _high, low in pairs)
+            ratio = low_energy / high_energy if direction == "charge" else high_energy / low_energy
+            if ratio <= 1:  # above 1 only measurement skew; keep the last valid value
+                self.efficiency[direction] = round(100 * ratio, 1)
+
+    @property
+    def loss(self) -> float | None:
+        if len(self.samples) < DCDC_MIN_SAMPLES:
+            return None
+        return round(sum(high - low for _t, high, low in self.samples) / len(self.samples))
+
+
 @dataclass(kw_only=True)
 class sofar_selectable_level(battery_device_level):
     """BTS device level read through a volatile query register and its ID readback."""
@@ -4559,6 +4651,34 @@ class sofar_selectable_level(battery_device_level):
 
 
 @dataclass(kw_only=True)
+class sofar_pcu_level(sofar_selectable_level):
+    """PCUs of one tower; also feeds the tower's DC/DC loss and efficiency."""
+
+    tower_key_prefix: str
+    window: dcdc_efficiency_window = field(default_factory=dcdc_efficiency_window)
+    low_side: dict[int, tuple[float, float]] = field(default_factory=dict)  # PCU number -> (time, W)
+
+    async def verify(self, hub: Any, instance: battery_device_instance, new_data: dict[str, Any]) -> bool:
+        if not await super().verify(hub, instance, new_data):
+            return False
+        prefix = instance.key_prefix
+        try:
+            low = new_data[prefix + "low_side_voltage"] * new_data[prefix + "low_side_current"]
+            high = sum(new_data[f"{prefix}battery_voltage_{nr}"] * new_data[f"{prefix}battery_current_{nr}"] for nr in (1, 2))
+        except (KeyError, TypeError):
+            return True
+        now = time.monotonic()
+        self.low_side[instance.number] = (now, low)
+        # Pair the fresh high-side value with the latest reading of every PCU.
+        if len(self.low_side) == len(self.instances) and all(now - seen < 120 for seen, _low in self.low_side.values()):
+            self.window.add(now, high, sum(value for _seen, value in self.low_side.values()))
+            new_data[self.tower_key_prefix + "dcdc_loss"] = self.window.loss
+            for direction in ("charge", "discharge"):
+                new_data[f"{self.tower_key_prefix}dcdc_efficiency_{direction}"] = self.window.efficiency.get(direction)
+        return True
+
+
+@dataclass(kw_only=True)
 class battery_config(base_battery_config):
     battery_sensor_type: list[SofarModbusSensorEntityDescription] | None = field(default_factory=lambda: BATTERY_SENSOR_TYPES)  # type: ignore[assignment]  # Covariant list typing
     battery_sensor_name_prefix: str | None = field(default="Battery {batt-nr}/{pack-nr} ")
@@ -4588,7 +4708,7 @@ class battery_config(base_battery_config):
         if not hub._invertertype & BAT_BTS:
             return []
         bdu = sofar_selectable_level(name="BDU", sensor_types=BDU_SENSOR_TYPES, inquire_address=0x60C4, id_address=0x6090)
-        pcu = sofar_selectable_level(name="PCU", sensor_types=PCU_SENSOR_TYPES, inquire_address=0x6044, id_address=0x6010)
+        pcu = sofar_pcu_level(name="PCU", sensor_types=PCU_SENSOR_TYPES, inquire_address=0x6044, id_address=0x6010, tower_key_prefix="battery_1_bdu_")
 
         # BDU_Number reads 0 after an inverter restart although the BDU answers.
         towers = await bdu.read_u16(hub, 0x6084) or int(await bdu.answers(hub, 1))
@@ -4601,6 +4721,7 @@ class battery_config(base_battery_config):
             _LOGGER.warning("%s: %s battery towers found; PCU devices are only supported with a single tower", hub.name, towers)
         elif towers == 1:
             self.single_tower = True
+            bdu.sensor_types = BDU_SENSOR_TYPES + DCDC_SENSOR_TYPES
             pcu.instances = [
                 battery_device_instance(
                     key=f"battery_1_pcu_{number}",

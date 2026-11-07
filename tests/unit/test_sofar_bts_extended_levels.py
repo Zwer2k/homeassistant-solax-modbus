@@ -133,6 +133,17 @@ async def test_bdu_probed_when_count_reads_zero(devices: dict[int, list[int]], e
     assert [i.key for i in instances["BDU"]] == expected_towers
 
 
+@pytest.mark.parametrize(
+    ("towers", "has_dcdc_sensors"),
+    [pytest.param(1, True, id="single-tower"), pytest.param(2, False, id="multiple-towers")],
+)
+async def test_dcdc_sensors_only_with_single_tower(towers: int, has_dcdc_sensors: bool) -> None:
+    levels = await battery_config().async_get_extended_levels(FakeHub({0x6084: towers, 0x6004: 4}))
+    bdu = next(level for level in levels if level.name == "BDU")
+
+    assert ("dcdc_loss" in {descr.key for descr in bdu.sensor_types}) is has_dcdc_sensors
+
+
 async def test_multiple_towers_skip_pcus(caplog: pytest.LogCaptureFixture) -> None:
     config, instances = await _discover(FakeHub({0x6084: 2, 0x6004: 8}))
 
