@@ -3920,26 +3920,34 @@ BATTERY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         allowedtypes=BAT_BTS,
         icon="mdi:battery-clock",
     ),
-    SofarModbusSensorEntityDescription(
-        name="Total Voltage",
-        key="total_voltage",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        register=0x900F,
-        scale=0.1,
-        allowedtypes=BAT_BTS,
-    ),
-    SofarModbusSensorEntityDescription(
-        name="Total Current",
-        key="total_current",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        register=0x9010,
-        register_data_type=REGISTER_S16,
-        scale=0.1,
-        read_scale_exceptions=HYD_EP_CURRENT_SCALE_EXCEPTIONS,
-        allowedtypes=BAT_BTS,
-    ),
+    # On BTS the whole 0x9000 area follows the pack selection, so these are per-module values;
+    # HYD-EP keeps its original names.
+    *[
+        SofarModbusSensorEntityDescription(
+            name=f"{prefix} Voltage",
+            key="total_voltage",
+            native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+            device_class=SensorDeviceClass.VOLTAGE,
+            register=0x900F,
+            scale=0.1,
+            **variant,
+        )
+        for prefix, variant in (("Module", {"allowedtypes": BAT_BTS, "blacklist": ["SM2ES4"]}), ("Total", {"allowedtypes": HYD_EP}))
+    ],
+    *[
+        SofarModbusSensorEntityDescription(
+            name=f"{prefix} Current",
+            key="total_current",
+            native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            device_class=SensorDeviceClass.CURRENT,
+            register=0x9010,
+            register_data_type=REGISTER_S16,
+            scale=0.1,
+            read_scale_exceptions=HYD_EP_CURRENT_SCALE_EXCEPTIONS,
+            **variant,
+        )
+        for prefix, variant in (("Module", {"allowedtypes": BAT_BTS, "blacklist": ["SM2ES4"]}), ("Total", {"allowedtypes": HYD_EP}))
+    ],
     SofarModbusSensorEntityDescription(
         name="SOC",
         key="soc",
@@ -4574,8 +4582,8 @@ DCDC_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
 
 INVERTER_EFFICIENCY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
     SofarModbusSensorEntityDescription(
-        name="Inverter Loss",
-        key="inverter_loss",
+        name="Conversion Loss",
+        key="conversion_loss",
         native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
@@ -4587,8 +4595,8 @@ INVERTER_EFFICIENCY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         icon="mdi:fire",
     ),
     SofarModbusSensorEntityDescription(
-        name="Inverter Efficiency",
-        key="inverter_efficiency",
+        name="Conversion Efficiency",
+        key="conversion_efficiency",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
@@ -4809,8 +4817,8 @@ class battery_config(base_battery_config):
         self.inverter_window.add(now, power_in, power_out)
         # Battery-only discharge isolates the battery to AC path.
         self.inverter_discharge_window.add(now, power_in, power_out, pv_power < 20 and battery_power <= -DCDC_MIN_POWER)
-        new_data["inverter_loss"] = self.inverter_window.loss
-        new_data["inverter_efficiency"] = self.inverter_window.efficiency
+        new_data["conversion_loss"] = self.inverter_window.loss
+        new_data["conversion_efficiency"] = self.inverter_window.efficiency
         dcdc = self.pcu_level.window.efficiency.get("discharge") if self.pcu_level else None
         inverter = self.inverter_discharge_window.efficiency
         if self.pcu_level is not None:

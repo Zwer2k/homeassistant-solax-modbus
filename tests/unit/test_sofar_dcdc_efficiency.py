@@ -183,8 +183,8 @@ async def test_inverter_efficiency_from_battery_discharge(monkeypatch: pytest.Mo
     for _ in range(DCDC_MIN_SAMPLES):
         await config.async_inverter_follow_up(hub, data)
 
-    assert data["inverter_loss"] == 14
-    assert data["inverter_efficiency"] == 97.2
+    assert data["conversion_loss"] == 14
+    assert data["conversion_efficiency"] == 97.2
     assert data["battery_1_bdu_battery_to_ac_efficiency"] == round(76.7 * 97.2 / 100, 1)
 
 
