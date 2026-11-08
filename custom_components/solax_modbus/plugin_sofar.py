@@ -4832,6 +4832,8 @@ class battery_config(base_battery_config):
     inverter_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_discharge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_grid_charge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
+    last_battery_to_ac: float | None = None
+    last_grid_to_battery: float | None = None
     inverter_sampled: float = float("-inf")
     depth_of_discharge: int | None = None  # 0x104D, refreshed by async_inverter_follow_up
     depth_of_discharge_read: float = float("-inf")
@@ -4891,7 +4893,12 @@ class battery_config(base_battery_config):
         prefix = self.pcu_level.tower_key_prefix
         new_data[prefix + "battery_to_ac_efficiency"] = battery_to_ac
         new_data[prefix + "grid_to_battery_efficiency"] = grid_to_battery
-        new_data[prefix + "round_trip_efficiency"] = chain_efficiency(grid_to_battery, battery_to_ac)
+        # Charge and discharge rarely share a window, so the round trip joins the last measured legs.
+        if battery_to_ac is not None:
+            self.last_battery_to_ac = battery_to_ac
+        if grid_to_battery is not None:
+            self.last_grid_to_battery = grid_to_battery
+        new_data[prefix + "round_trip_efficiency"] = chain_efficiency(self.last_grid_to_battery, self.last_battery_to_ac)
 
     def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
         return BATTERY_EXTENDED_SENSOR_TYPES if hub._invertertype & BAT_BTS else []

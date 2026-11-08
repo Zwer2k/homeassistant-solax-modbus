@@ -298,3 +298,21 @@ async def test_battery_chain_efficiencies(
 )
 def test_chain_efficiency(efficiencies: tuple[float | None, ...], expected: float | None) -> None:
     assert chain_efficiency(*efficiencies) == expected
+
+
+@pytest.mark.asyncio
+async def test_round_trip_joins_last_measured_legs(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = battery_config()
+    config.pcu_level = _level(1)
+    config.pcu_level.window.efficiency.update({"charge": 95.0, "discharge": 76.7})
+    clock = iter(range(0, 10_000, 15))
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock))
+    hub = InverterHub(HYBRID | X3 | BAT_BTS)
+    data: dict[str, Any] = {}
+    for registers in ({0x485: 0x10000 - 200, 0x604: 4000, 0x605: 475}, {0x485: 50, 0x604: 3955, 0x605: 0x10000 - 130}):
+        hub.registers = registers
+        for _ in range(DCDC_MIN_SAMPLES + DCDC_WINDOW_SECONDS // 15):
+            await config.async_inverter_follow_up(hub, data)
+
+    assert data["battery_1_bdu_grid_to_battery_efficiency"] is None
+    assert data["battery_1_bdu_round_trip_efficiency"] == chain_efficiency(round(95.0 * 95.0 / 100, 1), round(76.7 * 97.2 / 100, 1))
