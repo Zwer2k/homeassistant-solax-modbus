@@ -19,6 +19,8 @@ from custom_components.solax_modbus.plugin_sofar import (
     dcdc_efficiency_window,
     energy_ratio_window,
     sofar_pcu_level,
+    value_function_battery_lifetime_efficiency,
+    value_function_conversion_loss_today,
 )
 from custom_components.solax_modbus.sensor import _prefix_local_dependencies
 
@@ -316,3 +318,50 @@ async def test_round_trip_joins_last_measured_legs(monkeypatch: pytest.MonkeyPat
 
     assert data["battery_1_bdu_grid_to_battery_efficiency"] is None
     assert data["battery_1_bdu_round_trip_efficiency"] == chain_efficiency(round(95.0 * 95.0 / 100, 1), round(76.7 * 97.2 / 100, 1))
+
+
+TODAY = {
+    "solar_generation_today": 16.83,
+    "battery_output_energy_today": 6.08,
+    "import_energy_today": 22.5,
+    "load_consumption_today": 34.84,
+    "export_energy_today": 0.33,
+    "battery_input_energy_today": 9.51,
+}
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        pytest.param({}, 0.73, id="counters-of-the-real-system"),
+        pytest.param({"solar_generation_today": 0.0}, None, id="counter-already-reset-at-midnight"),
+    ],
+)
+def test_conversion_loss_today(changes: dict[str, float], expected: float | None) -> None:
+    assert value_function_conversion_loss_today(None, None, TODAY | changes) == expected
+
+
+@pytest.mark.parametrize(
+    ("charged", "expected"),
+    [pytest.param(9961.0, 72.4, id="real-system"), pytest.param(0.0, None, id="never-charged")],
+)
+def test_battery_lifetime_efficiency(charged: float, expected: float | None) -> None:
+    data = {"battery_input_energy_total": charged, "battery_output_energy_total": 7212.4}
+
+    assert value_function_battery_lifetime_efficiency(None, None, data) == expected
+
+
+@pytest.mark.asyncio
+async def test_all_four_inputs_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MPPT 3 and battery input 4 feed the balance on models that have them."""
+    config = battery_config()
+    hub = InverterHub(HYBRID | X3 | BAT_BTS)
+    # 1000 W AC from 600 W on MPPT 3 and 430 W from battery input 4
+    hub.registers = {0x485: 100, 0x58A: 3000, 0x58B: 200, 0x619: 4300, 0x61A: 0x10000 - 100}
+    clock = iter(range(0, 10_000, 15))
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock))
+    data: dict[str, Any] = {}
+    for _ in range(DCDC_MIN_SAMPLES):
+        await config.async_inverter_follow_up(hub, data)
+
+    assert data["conversion_loss"] == 30

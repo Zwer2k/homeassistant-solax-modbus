@@ -4448,6 +4448,25 @@ def value_function_stored(initval: Any, descr: Any, datadict: dict[str, Any]) ->
     return datadict.get(descr.key)
 
 
+ENERGY_TODAY_IN = ("solar_generation_today", "battery_output_energy_today", "import_energy_today")
+ENERGY_TODAY_OUT = ("load_consumption_today", "export_energy_today", "battery_input_energy_today")
+
+
+def value_function_conversion_loss_today(initval: Any, descr: Any, datadict: dict[str, Any]) -> float | None:
+    """Inverter loss from the daily counters, standby included."""
+    loss = sum(datadict[key] for key in ENERGY_TODAY_IN) - sum(datadict[key] for key in ENERGY_TODAY_OUT)
+    # The counters reset one by one at midnight.
+    return round(loss, 2) if loss >= 0 else None
+
+
+def value_function_battery_lifetime_efficiency(initval: Any, descr: Any, datadict: dict[str, Any]) -> float | None:
+    """Discharged over charged energy since commissioning; the SOC offset is negligible."""
+    charged = float(datadict["battery_input_energy_total"])
+    if not charged:
+        return None
+    return round(100 * float(datadict["battery_output_energy_total"]) / charged, 1)
+
+
 # BTS 5K BMS: SOC 0 % still leaves about 14 % of the full charge capacity (measured on four modules).
 BMS_RESERVE_SHARE = 0.14
 SOC_FIT_MIN_SPAN = 20  # % SOC needed before the learned Ah per % replaces the default
@@ -4644,6 +4663,28 @@ INVERTER_EFFICIENCY_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         depends_on=[],
         recompute_each_poll=True,
         allow_none=True,
+        allowedtypes=HYBRID | BAT_BTS,
+        icon="mdi:percent-circle-outline",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Conversion Loss Today",
+        key="conversion_loss_today",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_function=value_function_conversion_loss_today,
+        depends_on=[*ENERGY_TODAY_IN, *ENERGY_TODAY_OUT],
+        allowedtypes=HYBRID | BAT_BTS,
+        icon="mdi:fire",
+    ),
+    SofarModbusSensorEntityDescription(
+        name="Battery Lifetime Efficiency",
+        key="battery_lifetime_efficiency",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_function=value_function_battery_lifetime_efficiency,
+        depends_on=["battery_input_energy_total", "battery_output_energy_total"],
         allowedtypes=HYBRID | BAT_BTS,
         icon="mdi:percent-circle-outline",
     ),
@@ -4864,8 +4905,8 @@ class battery_config(base_battery_config):
             return
         self.inverter_sampled = now
         ac = await self._read_block(hub, 0x485, 1)
-        pv = await self._read_block(hub, 0x584, 6)  # voltage, current, power of MPPT 1 and 2
-        battery = await self._read_block(hub, 0x604, 9)  # voltage and current of inputs 1 (0x604) and 2 (0x60B)
+        pv = await self._read_block(hub, 0x584, 12)  # voltage, current, power of MPPT 1 to 4
+        battery = await self._read_block(hub, 0x604, 23)  # inputs 1 to 4 every 7 registers from voltage, current
         if ac is None or pv is None or battery is None:
             return
 
@@ -4873,8 +4914,8 @@ class battery_config(base_battery_config):
             return value - 0x10000 if value & 0x8000 else value
 
         ac_power = s16(ac[0]) * 10  # positive: AC output, includes the EPS output
-        pv_power = sum(pv[i] / 10 * pv[i + 1] / 100 for i in (0, 3))
-        battery_power = sum(battery[i] / 10 * s16(battery[i + 1]) / 100 for i in (0, 7))  # negative: discharge
+        pv_power = sum(pv[i] / 10 * pv[i + 1] / 100 for i in range(0, 12, 3))
+        battery_power = sum(battery[i] / 10 * s16(battery[i + 1]) / 100 for i in range(0, 23, 7))  # negative: discharge
         power_in = pv_power + max(-battery_power, 0) + max(-ac_power, 0)
         power_out = max(ac_power, 0) + max(battery_power, 0)
         self.inverter_window.add(now, power_in, power_out)
