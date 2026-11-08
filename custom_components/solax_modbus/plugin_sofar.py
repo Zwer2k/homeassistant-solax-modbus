@@ -4649,7 +4649,7 @@ class energy_ratio_window:
 
     seconds: float = DCDC_WINDOW_SECONDS
     samples: deque[tuple[float, float, float, bool]] = field(default_factory=deque)
-    efficiency: float | None = None  # last valid value
+    efficiency: float | None = None  # None while the window holds too few counting samples
 
     def add(self, now: float, power_in: float, power_out: float, counts: bool = True) -> None:
         """Add a sample; only samples with counts=True and enough input power enter the efficiency."""
@@ -4658,9 +4658,10 @@ class energy_ratio_window:
             self.samples.popleft()
         pairs = [(p_in, p_out) for _t, p_in, p_out, used in self.samples if used and p_in >= DCDC_MIN_POWER]
         if len(pairs) < DCDC_MIN_SAMPLES:
+            self.efficiency = None
             return
         ratio = sum(p_out for _p_in, p_out in pairs) / sum(p_in for p_in, _p_out in pairs)
-        if ratio <= 1:  # above 1 only measurement skew; keep the last valid value
+        if ratio <= 1:  # above 1 only measurement skew; keep the last value of this run
             self.efficiency = round(100 * ratio, 1)
 
     @property
@@ -4680,7 +4681,7 @@ class dcdc_efficiency_window:
 
     seconds: float = DCDC_WINDOW_SECONDS
     samples: deque[tuple[float, float, float]] = field(default_factory=deque)
-    efficiency: dict[str, float] = field(default_factory=dict)  # last valid value per direction
+    efficiency: dict[str, float] = field(default_factory=dict)  # only directions measured within the window
 
     def add(self, now: float, high_side: float, low_side: float) -> None:
         self.samples.append((now, high_side, low_side))
@@ -4689,11 +4690,12 @@ class dcdc_efficiency_window:
         for direction, sign in (("charge", 1), ("discharge", -1)):
             pairs = [(abs(high), abs(low)) for _t, high, low in self.samples if sign * low >= DCDC_MIN_POWER and sign * high > 0]
             if len(pairs) < DCDC_MIN_SAMPLES:
+                self.efficiency.pop(direction, None)
                 continue
             high_energy = sum(high for high, _low in pairs)
             low_energy = sum(low for _high, low in pairs)
             ratio = low_energy / high_energy if direction == "charge" else high_energy / low_energy
-            if ratio <= 1:  # above 1 only measurement skew; keep the last valid value
+            if ratio <= 1:  # above 1 only measurement skew; keep the last value of this run
                 self.efficiency[direction] = round(100 * ratio, 1)
 
     @property

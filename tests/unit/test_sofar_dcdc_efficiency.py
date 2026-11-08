@@ -67,10 +67,28 @@ def test_no_efficiency_without_reliable_window(high: float, low: float, count: i
 
 def test_last_valid_efficiency_survives_skewed_window() -> None:
     window = _filled(-451, -588)
-    for second in range(2 * DCDC_WINDOW_SECONDS, 2 * DCDC_WINDOW_SECONDS + 15 * DCDC_MIN_SAMPLES, 15):
-        window.add(second, -600, -500)
+    window.add(15 * DCDC_MIN_SAMPLES, -10000, -100)
 
     assert window.efficiency == {"discharge": 76.7}
+
+
+def test_efficiency_clears_once_the_direction_left_the_window() -> None:
+    """While charging, the discharge efficiency is unknown instead of a stale value."""
+    window = _filled(-451, -588)
+    for second in range(15 * DCDC_MIN_SAMPLES, DCDC_WINDOW_SECONDS + 15 * DCDC_MIN_SAMPLES, 15):
+        window.add(second, 2000, 1900)
+
+    assert window.efficiency == {"charge": 95.0}
+
+
+def test_energy_ratio_efficiency_clears_without_counting_samples() -> None:
+    window = energy_ratio_window()
+    for second in range(DCDC_MIN_SAMPLES):
+        window.add(second * 15, 513, 500)
+    for second in range(DCDC_MIN_SAMPLES, DCDC_MIN_SAMPLES + DCDC_WINDOW_SECONDS // 15):
+        window.add(second * 15, 5000, 4800, counts=False)
+
+    assert window.efficiency is None
 
 
 def test_old_samples_leave_the_window() -> None:
