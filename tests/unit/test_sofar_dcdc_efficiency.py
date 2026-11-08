@@ -15,6 +15,7 @@ from custom_components.solax_modbus.plugin_sofar import (
     HYBRID,
     X3,
     battery_config,
+    chain_efficiency,
     dcdc_efficiency_window,
     energy_ratio_window,
     sofar_pcu_level,
@@ -245,3 +246,55 @@ async def test_window_drops_samples_from_before_host_suspend(monkeypatch: pytest
 
     await level.verify(None, level.instances[1], _pcu_data(2, -5.0))
     assert [sample[0] for sample in level.window.samples] == [36_001]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registers", "dcdc", "expected"),
+    [
+        pytest.param(
+            {0x485: 50, 0x604: 3955, 0x605: 0x10000 - 130},
+            {"discharge": 76.7},
+            {"battery_to_ac_efficiency": round(76.7 * 97.2 / 100, 1), "grid_to_battery_efficiency": None, "round_trip_efficiency": None},
+            id="battery-discharge",
+        ),
+        pytest.param(
+            {0x485: 0x10000 - 200, 0x604: 4000, 0x605: 475},  # 2000 W from the grid, 400 V * 4.75 A into the battery
+            {"charge": 95.0},
+            {"battery_to_ac_efficiency": None, "grid_to_battery_efficiency": round(95.0 * 95.0 / 100, 1), "round_trip_efficiency": None},
+            id="grid-charge",
+        ),
+        pytest.param(
+            {0x485: 0x10000 - 200, 0x584: 3000, 0x585: 100, 0x604: 4000, 0x605: 475},  # 300 V * 1 A PV
+            {"charge": 95.0},
+            {"battery_to_ac_efficiency": None, "grid_to_battery_efficiency": None, "round_trip_efficiency": None},
+            id="pv-excludes-grid-charge",
+        ),
+    ],
+)
+async def test_battery_chain_efficiencies(
+    monkeypatch: pytest.MonkeyPatch, registers: dict[int, int], dcdc: dict[str, float], expected: dict[str, float | None]
+) -> None:
+    config = battery_config()
+    config.pcu_level = _level(1)
+    config.pcu_level.window.efficiency.update(dcdc)
+    hub = InverterHub(HYBRID | X3 | BAT_BTS)
+    hub.registers = registers
+    clock = iter(range(0, 10_000, 15))
+    monkeypatch.setattr(plugin_sofar, "wall_clock", lambda: next(clock))
+    data: dict[str, Any] = {}
+    for _ in range(DCDC_MIN_SAMPLES):
+        await config.async_inverter_follow_up(hub, data)
+
+    assert {key: data[f"battery_1_bdu_{key}"] for key in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("efficiencies", "expected"),
+    [
+        pytest.param((90.25, 91.2), 82.3, id="round-trip"),
+        pytest.param((90.25, None), None, id="one-stage-unknown"),
+    ],
+)
+def test_chain_efficiency(efficiencies: tuple[float | None, ...], expected: float | None) -> None:
+    assert chain_efficiency(*efficiencies) == expected
