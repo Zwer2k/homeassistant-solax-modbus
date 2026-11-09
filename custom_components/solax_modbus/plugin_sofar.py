@@ -4634,6 +4634,7 @@ DCDC_SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         for name, key in (
             ("Battery to AC Efficiency", "battery_to_ac_efficiency"),
             ("Grid to Battery Efficiency", "grid_to_battery_efficiency"),
+            ("PV to Battery Efficiency", "pv_to_battery_efficiency"),
             ("Round Trip Efficiency", "round_trip_efficiency"),
         )
     ],
@@ -4873,8 +4874,10 @@ class battery_config(base_battery_config):
     inverter_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_discharge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
     inverter_grid_charge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
+    inverter_pv_charge_window: energy_ratio_window = field(default_factory=energy_ratio_window)
+    last_inverter_dc_to_ac: float | None = None
     last_battery_to_ac: float | None = None
-    last_grid_to_battery: float | None = None
+    last_pv_to_battery: float | None = None
     inverter_sampled: float = float("-inf")
     depth_of_discharge: int | None = None  # 0x104D, refreshed by async_inverter_follow_up
     depth_of_discharge_read: float = float("-inf")
@@ -4923,6 +4926,17 @@ class battery_config(base_battery_config):
         no_pv = pv_power < 20
         self.inverter_discharge_window.add(now, power_in, power_out, no_pv and battery_power <= -DCDC_MIN_POWER)
         self.inverter_grid_charge_window.add(now, power_in, power_out, no_pv and ac_power <= -DCDC_MIN_POWER and battery_power >= DCDC_MIN_POWER)
+        if self.inverter_discharge_window.efficiency is not None:
+            self.last_inverter_dc_to_ac = self.inverter_discharge_window.efficiency
+        # While PV charges, the AC output shares the inverter loss; its PV share is estimated with the
+        # DC to AC efficiency last measured on battery discharge.
+        pv_for_battery = pv_power - max(ac_power, 0) * 100 / (self.last_inverter_dc_to_ac or 100)
+        self.inverter_pv_charge_window.add(
+            now,
+            pv_for_battery,
+            battery_power,
+            self.last_inverter_dc_to_ac is not None and ac_power >= 0 and battery_power >= DCDC_MIN_POWER,
+        )
         new_data["conversion_loss"] = self.inverter_window.loss
         new_data["conversion_efficiency"] = self.inverter_window.efficiency
         if self.pcu_level is None:
@@ -4930,16 +4944,17 @@ class battery_config(base_battery_config):
 
         dcdc = self.pcu_level.window.efficiency
         battery_to_ac = chain_efficiency(dcdc.get("discharge"), self.inverter_discharge_window.efficiency)
-        grid_to_battery = chain_efficiency(self.inverter_grid_charge_window.efficiency, dcdc.get("charge"))
+        pv_to_battery = chain_efficiency(self.inverter_pv_charge_window.efficiency, dcdc.get("charge"))
         prefix = self.pcu_level.tower_key_prefix
         new_data[prefix + "battery_to_ac_efficiency"] = battery_to_ac
-        new_data[prefix + "grid_to_battery_efficiency"] = grid_to_battery
+        new_data[prefix + "grid_to_battery_efficiency"] = chain_efficiency(self.inverter_grid_charge_window.efficiency, dcdc.get("charge"))
+        new_data[prefix + "pv_to_battery_efficiency"] = pv_to_battery
         # Charge and discharge rarely share a window, so the round trip joins the last measured legs.
         if battery_to_ac is not None:
             self.last_battery_to_ac = battery_to_ac
-        if grid_to_battery is not None:
-            self.last_grid_to_battery = grid_to_battery
-        new_data[prefix + "round_trip_efficiency"] = chain_efficiency(self.last_grid_to_battery, self.last_battery_to_ac)
+        if pv_to_battery is not None:
+            self.last_pv_to_battery = pv_to_battery
+        new_data[prefix + "round_trip_efficiency"] = chain_efficiency(self.last_pv_to_battery, self.last_battery_to_ac)
 
     def get_extended_pack_sensor_types(self, hub: Any) -> list[Any]:
         return BATTERY_EXTENDED_SENSOR_TYPES if hub._invertertype & BAT_BTS else []
