@@ -52,7 +52,6 @@ from custom_components.solax_modbus.const import (
     battery_device_level,
     plugin_base,
     value_function_2byte_timestamp,
-    value_function_disabled_enabled,
     value_function_rtc_ymd,
 )
 
@@ -3366,7 +3365,10 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Battery Active Control",
         key="battery_active_control",
         register=0x102B,
-        scale=value_function_disabled_enabled,
+        scale={
+            0: "Disabled",
+            1: "Enabled",
+        },
         entity_registry_enabled_default=False,
         allowedtypes=HYBRID,
     ),
@@ -3374,7 +3376,10 @@ SENSOR_TYPES: list[SofarModbusSensorEntityDescription] = [
         name="Parallel Control",
         key="parallel_control",
         register=0x1035,
-        scale=value_function_disabled_enabled,
+        scale={
+            0: "Disabled",
+            1: "Enabled",
+        },
         allowedtypes=HYBRID | PV | X3 | PM,
     ),
     SofarModbusSensorEntityDescription(

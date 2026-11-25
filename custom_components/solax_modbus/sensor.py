@@ -442,6 +442,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         _LOGGER.info("%s: Registering %s Energy Dashboard entities", hub_name, len(new_entities))
                         entities.extend(new_entities)
                         async_add_entities(new_entities)
+                        # New computed entities may require disabled raw sensors.
+                        hub.blocks_changed = True
 
                     for key, description in desired.items():
                         sensor = dashboard_entities.get(key) or hub.sensorEntities.get(key)
@@ -489,14 +491,20 @@ class SolaXModbusSensor(SensorEntity):
         self._cancel_computed_expiry: Any = None
         self._attr_extra_state_attributes = _energy_dashboard_mapping_attrs(self.entity_description, self._hub)
         scale = description.scale
-        if description.native_unit_of_measurement is not None and isinstance(scale, (int, float)) and not isinstance(scale, bool) and scale > 0:
-            # Display exactly the resolution the value carries: what the scale can express
-            # (0.01 -> 2 decimals, 0.1 -> 1, unscaled -> integer), capped by the rounding
-            # actually applied to the state. Without this the frontend picks its own
-            # precision, hiding real decimals or padding integers with a fake ".0".
-            expressible = 0 if scale >= 1 else math.ceil(-math.log10(scale))
-            self._attr_suggested_display_precision = min(expressible, description.rounding)
-        elif isinstance(scale, dict) and all(isinstance(opt, str) for opt in scale.values()) and description.native_unit_of_measurement is None:
+        if description.native_unit_of_measurement is not None:
+            # If we have a unit of measuremed, determine whether a suggested display precision
+            # should be provided
+            if description.suggested_display_precision is not None:
+                # Directly set to value provided by description
+                self._attr_suggested_display_precision = description.suggested_display_precision
+            elif isinstance(scale, (int, float)) and not isinstance(scale, bool) and scale > 0:
+                # Display exactly the resolution the value carries: what the scale can express
+                # (0.01 -> 2 decimals, 0.1 -> 1, unscaled -> integer), capped by the rounding
+                # actually applied to the state. Without this the frontend picks its own
+                # precision, hiding real decimals or padding integers with a fake ".0".
+                expressible = 0 if scale >= 1 else math.ceil(-math.log10(scale))
+                self._attr_suggested_display_precision = min(expressible, description.rounding)
+        elif isinstance(scale, dict) and all(isinstance(opt, str) for opt in scale.values()):
             # If the sensor has a set of distinct string options as reported by its value
             # function being a dict, then inform HA of the available options.
             # Only apply ENUM when there is no unit of measurement — a unit implies
@@ -619,6 +627,8 @@ class SolaXModbusSensor(SensorEntity):
     @property
     def available(self) -> bool:
         """Return whether the dashboard currently exposes this entity."""
+        if self.entity_description._energy_dashboard_source_hubs and self.native_value is None:
+            return False
         return self._energy_dashboard_active and self._computed_available and super().available
 
     @property
