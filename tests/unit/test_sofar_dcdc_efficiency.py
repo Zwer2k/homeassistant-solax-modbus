@@ -163,11 +163,13 @@ async def test_rejected_pcu_read_does_not_feed_the_window() -> None:
     [
         pytest.param([(513, 500, True)], 97.5, 13, id="battery-to-ac"),
         pytest.param([(513, 500, True), (5000, 4800, False)], 97.5, 106, id="excluded-samples-only-count-for-loss"),
-        pytest.param([(40, 30, True)], None, 10, id="below-min-power"),
+        pytest.param([(40, 30, True)], None, None, id="idle-below-min-power"),
+        pytest.param([(0, 10, True)], None, None, id="idle-ac-offset-is-no-negative-loss"),
+        pytest.param([(513, 500, True), (0, 10, True)], 97.5, 13, id="idle-samples-skipped-for-loss"),
         pytest.param([(500, 600, True)], None, -100, id="skewed-above-100-percent"),
     ],
 )
-def test_energy_ratio_window(samples: list[tuple[float, float, bool]], efficiency: float | None, loss: float) -> None:
+def test_energy_ratio_window(samples: list[tuple[float, float, bool]], efficiency: float | None, loss: float | None) -> None:
     window = energy_ratio_window()
     for second in range(DCDC_MIN_SAMPLES * len(samples)):
         power_in, power_out, counts = samples[second % len(samples)]

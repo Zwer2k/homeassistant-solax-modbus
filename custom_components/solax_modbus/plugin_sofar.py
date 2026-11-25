@@ -4720,9 +4720,11 @@ class energy_ratio_window:
 
     @property
     def loss(self) -> float | None:
-        if len(self.samples) < DCDC_MIN_SAMPLES:
+        """Mean loss while converting; idle readings are only the 10 W register step and offset."""
+        active = [p_in - p_out for _t, p_in, p_out, _used in self.samples if max(p_in, p_out) >= DCDC_MIN_POWER]
+        if len(active) < DCDC_MIN_SAMPLES:
             return None
-        return round(sum(p_in - p_out for _t, p_in, p_out, _used in self.samples) / len(self.samples))
+        return round(sum(active) / len(active))
 
 
 def chain_efficiency(*efficiencies: float | None) -> float | None:
